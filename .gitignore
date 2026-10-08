@@ -1,0 +1,14 @@
+# Env files
+.env
+.env.backup
+.env.production
+
+# Virtual environment
+venv/
+
+# Python cache
+__pycache__/
+
+# System files
+.DS_Store
+Thumbs.db
