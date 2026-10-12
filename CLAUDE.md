@@ -37,7 +37,15 @@ beards and headwear matters.
    - Not allowed anywhere in this repo or pipeline: FLAME texture model, FLAME Blender add-on,
      older FLAME versions, MetaHuman, Reallusion Character Creator content, DigiFace-1M,
      Digi2Real, DCFace, Vec2Face, HyperFace, any InsightFace model/weights, any
-     diffusion/AI-generated faces, any face images scraped from the web.
+     face images scraped from the web.
+   - **AI-generated faces (diffusion etc.): experiment only** (user decision, 2026-10-09).
+     Code lives in `tools/ai_experiment/`, outputs in `output/ai_experiment/` (git-ignored),
+     its Python env in `venv_ai/` (git-ignored, never the app `venv/`). Every generator model
+     gets a row in `assets/LICENSES.csv`. AI-generated images must **not** enter training data
+     or `output/<job_id>/` unless the user explicitly approves a specific model after its
+     license and training-data provenance are reviewed. No identity-preserving add-ons that
+     depend on banned models (e.g. InsightFace-based InstantID / PhotoMaker / IP-Adapter-FaceID),
+     and never real employee photos as input.
    - MPFB **community/third-party** asset packs are NOT allowed unless their license is checked
      and recorded.
 2. **Every asset gets a row in `assets/LICENSES.csv`** (`path,name,source_url,license,version,added_on,notes`)
