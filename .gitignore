@@ -12,3 +12,18 @@ __pycache__/
 # System files
 .DS_Store
 Thumbs.db
+
+# Pipeline output
+output/
+
+# Test cache
+.pytest_cache/
+
+# Real photos and anything derived from them (never commit)
+data/
+
+# Large CC0 HDRIs: re-download from assets/hdri/hdris.json (URL + md5)
+assets/hdri/*.hdr
+
+# AI experiment env for branch experiment/approach-b-img2img (keep out of git everywhere)
+venv_ai/
