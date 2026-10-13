@@ -30,6 +30,9 @@ beards and headwear matters.
   Blender 5.2.2 / MPFB 2.0.17 / CC0 asset packs / HDRIs (sha256-pinned) on a fresh VM and run
   `render_batch.py` with `"device": "OPTIX"` (or `CUDA`) and `--resume`. Verified: a clean install gives
   identical params to this laptop for the same seed. Bring batches back into `output/<job_id>/`.
+  Code is cloned from the public GitHub mirror `https://github.com/ankitscode/-synthetic-Image-Genrator`
+  (remote `github`; GitLab `origin` stays). Push both remotes. Open directly:
+  `https://colab.research.google.com/github/ankitscode/-synthetic-Image-Genrator/blob/master/colab/synthface_3d_colab.ipynb`
 - FastAPI entry point is `main.py` in the project root (not `app/main.py`); the rest of the app
   code lives in `app/`.
 
