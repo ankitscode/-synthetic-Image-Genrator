@@ -1,6 +1,8 @@
 """Render a batch of identities inside Blender.
 
-    $BLENDER_PATH --background --python blender/render_batch.py -- --job output/<job_id>/job.json
+    $BLENDER_PATH --background --python blender/render_batch.py -- --job output/<job_id>/job.json [--resume]
+
+--resume skips identities whose params.json already says "done" (e.g. after a Colab disconnect).
 
 job.json (written by the app; output goes next to it):
     {
@@ -42,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser(prog="render_batch.py")
     parser.add_argument("--job", required=True, type=Path)
+    parser.add_argument("--resume", action="store_true", help="skip identities already rendered")
     return parser.parse_args(argv)
 
 
@@ -113,6 +116,14 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
     return record
 
 
+def already_done(out_dir: Path) -> bool:
+    params_file = out_dir / "params.json"
+    try:
+        return json.loads(params_file.read_text(encoding="utf-8")).get("status") == "done"
+    except (OSError, ValueError):
+        return False
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     args = parse_args()
@@ -132,6 +143,9 @@ def main() -> None:
 
     for index in range(1, total + 1):
         out_dir = job_dir / C.IDENTITY_DIR_FMT.format(index)
+        if args.resume and already_done(out_dir):
+            emit({"event": "identity_done", "index": index, "status": "done", "skipped": True})
+            continue
         out_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
         try:
