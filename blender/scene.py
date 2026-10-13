@@ -17,10 +17,30 @@ EYE_RAY_MAX_STEPS = 8
 EYE_RAY_STEP_M = 1e-4  # nudge past a see-through hit  # only for reporting 35 mm-equivalent focal lengths
 
 
+def enable_gpu(device_type: str) -> None:
+    """Use every Cycles device of this type (CUDA / OPTIX / HIP...). Session only: in
+    --background mode Blender does not save preferences."""
+    prefs = bpy.context.preferences.addons["cycles"].preferences
+    if prefs.compute_device_type == device_type and any(d.use and d.type == device_type for d in prefs.devices):
+        return
+    prefs.compute_device_type = device_type
+    prefs.get_devices()
+    found = [d for d in prefs.devices if d.type == device_type]
+    if not found:
+        raise RuntimeError(f"No Cycles {device_type} device found")
+    for d in prefs.devices:
+        d.use = d.type == device_type
+
+
 def configure_render(samples: int, device: str) -> None:
+    """device: "CPU" or a Cycles GPU backend ("CUDA", "OPTIX", ...)."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
-    scene.cycles.device = device
+    if device == "CPU":
+        scene.cycles.device = "CPU"
+    else:
+        enable_gpu(device)
+        scene.cycles.device = "GPU"
     scene.cycles.samples = samples
     scene.cycles.use_denoising = True
     scene.render.resolution_x = C.RENDER_RESOLUTION
