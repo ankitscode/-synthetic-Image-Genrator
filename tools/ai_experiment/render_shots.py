@@ -14,6 +14,11 @@ Depth, normals and masks come from ray casts against the 3D scene (no face detec
 
 Hair masks only (no render; the camera placement is deterministic, so they match the PNGs):
     /snap/bin/blender --background --python tools/ai_experiment/render_shots.py -- --hair-masks
+
+Many people (a named set, e.g. on a Colab GPU), output/ai_experiment/sets/<set>/shots/<person>/:
+    blender --background --python tools/ai_experiment/render_shots.py -- \
+        --set colab_10 --seed 20261013 --people 1-10 --shots s1,s2,s3,s6 --device OPTIX
+Shots already written (<shot>.json exists) are skipped, so a re-run resumes.
 """
 
 import argparse
@@ -35,6 +40,7 @@ from shared import constants as C  # noqa: E402
 from shared import sampling  # noqa: E402
 
 OUT_DIR = PROJECT_ROOT / "output" / "ai_experiment" / "consistency" / "shots"
+SETS_DIR = PROJECT_ROOT / "output" / "ai_experiment" / "sets"
 FACE_TARGETS_FILE = PROJECT_ROOT / "config" / "face_targets.json"
 HDRI_DIR = PROJECT_ROOT / "assets" / "hdri"
 JOB_SEED = 20261010  # people from output/test_12x6
@@ -125,17 +131,22 @@ def _save(path: Path, rgba: np.ndarray) -> None:
 
 
 def render_person(index: int, shot_ids: list[str], categories: dict, params: dict, hdris: dict,
-                  hair_masks_only: bool = False) -> None:
-    ident = sampling.sample_identity(JOB_SEED, index, params, {n: c["region"] for n, c in categories.items()})
+                  hair_masks_only: bool = False, job_seed: int = JOB_SEED, out_dir: Path = OUT_DIR,
+                  device: str = "CPU") -> None:
+    person_dir = out_dir / f"id_{index:05d}"
+    if not hair_masks_only:
+        shot_ids = [s for s in shot_ids if not (person_dir / f"{s}.json").exists()]
+        if not shot_ids:
+            return
+    ident = sampling.sample_identity(job_seed, index, params, {n: c["region"] for n, c in categories.items()})
     human.clear_scene()
     basemesh, eyes = human.build_human(ident, categories)
     eye_mid, iod = human.eye_geometry(eyes)
     eye_left, eye_right = human.eye_centres(eyes)
     camera, light = scene.create_rig()
-    scene.configure_render(SAMPLES, "CPU")
+    scene.configure_render(SAMPLES, device)
     scn = bpy.context.scene
     scn.render.resolution_x = scn.render.resolution_y = SIZE
-    person_dir = OUT_DIR / f"id_{index:05d}"
     person_dir.mkdir(parents=True, exist_ok=True)
 
     for shot in shot_ids:
@@ -175,20 +186,42 @@ def render_person(index: int, shot_ids: list[str], categories: dict, params: dic
             eyes_px[side] = [ndc.x * SIZE, (1.0 - ndc.y) * SIZE]
         meta = {"person": f"id_{index:05d}", "shot": shot, "yaw": yaw, "pitch": pitch, "lighting": lighting,
                 "camera": cam, "derived": derived, "eyes_px": eyes_px, "face_mask_pixels": int((mask > 0).sum()),
-                "identity_seed": ident["seed"], "skin": ident["skin"]}
+                "job_seed": job_seed, "identity_seed": ident["seed"], "sex": ident["sex"],
+                "age_years": ident["age_years"], "hair": ident["hair"], "skin": ident["skin"]}
         (person_dir / f"{shot}.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         print(f"SHOT id_{index:05d} {shot} yaw={yaw:+.0f} pitch={pitch:+.0f} {lighting} mask={meta['face_mask_pixels']}")
+
+
+def parse_people(spec: str) -> list[int]:
+    people: list[int] = []
+    for part in spec.split(","):
+        lo, _, hi = part.partition("-")
+        people += list(range(int(lo), int(hi or lo) + 1))
+    return people
 
 
 def main() -> None:
     argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
     parser = argparse.ArgumentParser()
     parser.add_argument("--hair-masks", action="store_true", help="only write <shot>_hair.png (no render)")
+    parser.add_argument("--set", help="named set under output/ai_experiment/sets/ (many people)")
+    parser.add_argument("--seed", type=int, default=JOB_SEED, help="job seed of the identities")
+    parser.add_argument("--people", default="1-4", help="identity indexes, e.g. 1-10 or 1,3,7")
+    parser.add_argument("--shots", default="s1,s2,s3,s6", help=f"comma list from {','.join(SHOTS)}")
+    parser.add_argument("--device", default="CPU", help="CPU, CUDA or OPTIX")
     args = parser.parse_args(argv)
     categories = {c["name"]: c for c in json.loads(FACE_TARGETS_FILE.read_text())["categories"]}
     params = sampling.resolve_params()
     hdris = {h["id"]: h for h in json.loads((HDRI_DIR / "hdris.json").read_text())}
     human.load_mpfb()
+    if args.set:
+        out_dir = SETS_DIR / args.set / "shots"
+        shots = args.shots.split(",")
+        for index in parse_people(args.people):
+            render_person(index, shots, categories, params, hdris, job_seed=args.seed, out_dir=out_dir,
+                          device=args.device)
+            print(f"PERSON_DONE id_{index:05d}", flush=True)
+        return
     if args.hair_masks:
         for index, shots in HAIR_MASK_SHOTS.items():
             render_person(index, shots, categories, params, hdris, hair_masks_only=True)

@@ -30,6 +30,8 @@ beards and headwear matters.
   Blender 5.2.2 / MPFB 2.0.17 / CC0 asset packs / HDRIs (sha256-pinned) on a fresh VM and run
   `render_batch.py` with `"device": "OPTIX"` (or `CUDA`) and `--resume`. Verified: a clean install gives
   identical params to this laptop for the same seed. Bring batches back into `output/<job_id>/`.
+  Approach B (experiment branch only): `colab/approach_b_colab.ipynb` (render_shots.py `--set` +
+  blind_test.py `--set`); its outputs stay under `output/ai_experiment/sets/<set>/`.
 - FastAPI entry point is `main.py` in the project root (not `app/main.py`); the rest of the app
   code lives in `app/`.
 

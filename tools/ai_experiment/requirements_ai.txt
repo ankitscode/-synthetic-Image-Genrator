@@ -1,0 +1,10 @@
+# AI experiment env (venv_ai/ locally; Colab uses its own CUDA torch). Experiment only, see CLAUDE.md rule 1.
+# torch: laptop uses 2.14.1+cpu; on Colab keep the preinstalled CUDA build.
+accelerate==1.15.0
+diffusers==0.41.0
+huggingface_hub==1.33.0
+numpy==2.5.3
+opencv-python-headless==5.0.0.93
+pillow==12.3.0
+safetensors==0.8.0
+transformers==5.19.0
