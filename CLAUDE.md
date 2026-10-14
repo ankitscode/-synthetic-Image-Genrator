@@ -193,12 +193,12 @@ Per identity (fixed for all images of that identity):
 | age_years | 18–70 (weighted toward 20–50) |
 | weight / muscle / proportions | 0.1–0.9 / 0.2–0.8 / 0.2–0.8 |
 | race weights | Dirichlet around job mix (default af 0.30 / as 0.35 / ca 0.35), normalized |
-| face shape targets | 20–40 categories, strength ±1.0, ≥1 from each of 11 regions (`config/face_targets.json`, list in `output/smoke/face_targets.txt`) |
+| face shape targets | 20–40 categories, value ~ N(0, 0.35) truncated at ±0.7 (sampler 4; was uniform ±1.0 → caricatures), ≥1 from each of 11 regions (`config/face_targets.json`, list in `output/smoke/face_targets.txt`) |
 | skin | light base (asian/caucasian) blended with african base by `tone` (~58% medium, 26% dark, 16% light) + small HSV shift + roughness/specular/clearcoat; once per identity |
 | eye colour | by dominant race (african/asian ≥95% brown/darkbrown); `brownlight` unused (renders amber) |
 | eyebrows | 12 styles dealt evenly (each once per 12 identities); colour = hair colour × 0.45–1.1 |
-| hair | excluded (cover an eye, see `blender/debug_hair_audit.py`): bob01, bob02, braid01, short03 |
-| beard (men) | none / stubble / short / full; `beard_prob` 0.5 (not yet: needs a beard asset pack) |
+| hair | excluded (cover an eye, see `blender/debug_hair_audit.py`): bob01, bob02, braid01, short03; colour: no grey/white under 45, some 45–55, mostly over 55 |
+| beard (men) | in-house particle beards (`human.add_beard`, audit `blender/debug_beard.py`): none / stubble / short / full / goatee, ~65% of men (weights by age, `BEARD_STYLE_WEIGHTS`); region computed from each face (lips, ears, chin), patchy density, skin under the beard tinted; colour = hair colour (80%); own seed stream |
 
 Per image:
 
@@ -207,7 +207,9 @@ Per image:
 | images_per_identity | 10 for tests, 50 for production |
 | yaw / pitch / roll | \|yaw\| 60% 0–15°, 30% 15–30°, 10% 30–40°; pitch ±20° (σ 10); roll ±10° (σ 5); re-sampled until both eye centres are visible |
 | light colour temp | 3000–6500 K |
-| light intensity | 0.3–3× of a 12 W key light (AgX, exposure 0; QA: ≤1% pure-white face pixels) |
+| light intensity | 0.3–3× of a 12 W key light (QA: ≤1% pure-white face pixels) |
+| exposure | auto-exposure like a phone: per identity a reference face brightness (neutral light), per image a 64 px preview sets the EV to match it ± N(0, 0.2) EV (≤0.5); skin-tone differences between people stay |
+| environment | 60% HDRI (6 Poly Haven CC0, random rotation, key light × 0.1–0.8, depth of field f/2.8–8), 40% flat/gradient backdrop |
 | camera focal / distance | 40–55 mm / 45–65 cm; sensor width derived so the face (chin–hairline) fills 55–60% of the frame |
 | glasses_prob | 0.25 |
 | headwear_prob | 0.35 (only once in-house headwear assets exist) |

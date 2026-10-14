@@ -189,7 +189,7 @@ def set_background(params: dict) -> None:
 
 
 def face_exposure_qa(camera: bpy.types.Object, basemesh: bpy.types.Object, eye_mid: Vector, iod: float,
-                     png_path: str) -> dict:
+                     png_path: str, step: int = C.QA_SAMPLE_STEP_PX) -> dict:
     """Fraction of pure-white face pixels in a saved render.
 
     Face pixels: camera rays (every QA_SAMPLE_STEP_PX pixel) whose first hit is the skin
@@ -197,7 +197,8 @@ def face_exposure_qa(camera: bpy.types.Object, basemesh: bpy.types.Object, eye_m
     """
     scene = bpy.context.scene
     depsgraph = bpy.context.evaluated_depsgraph_get()
-    width, height = scene.render.resolution_x, scene.render.resolution_y
+    pct = scene.render.resolution_percentage
+    width, height = scene.render.resolution_x * pct // 100, scene.render.resolution_y * pct // 100
     top_right, bottom_right, bottom_left, top_left = camera.data.view_frame(scene=scene)
     rot = camera.matrix_world.to_3x3()
     origin = camera.matrix_world.translation
@@ -212,7 +213,6 @@ def face_exposure_qa(camera: bpy.types.Object, basemesh: bpy.types.Object, eye_m
 
     face = white = near_white = 0
     luma_sum = 0.0
-    step = C.QA_SAMPLE_STEP_PX
     for py in range(step // 2, height, step):
         v = (py + 0.5) / height
         for px in range(step // 2, width, step):
@@ -233,6 +233,49 @@ def face_exposure_qa(camera: bpy.types.Object, basemesh: bpy.types.Object, eye_m
         "face_near_white_fraction": near_white / face if face else 0.0,
         "face_mean_luma": luma_sum / face if face else 0.0,
     }
+
+
+def preview_face_luma(camera: bpy.types.Object, basemesh: bpy.types.Object, eye_mid: Vector, iod: float,
+                      preview_path: str) -> float:
+    """Mean face display luma of a small, quick render at exposure 0 (current scene setup)."""
+    scene = bpy.context.scene
+    render = scene.render
+    saved = (render.resolution_percentage, scene.cycles.samples, render.filepath, scene.view_settings.exposure)
+    render.resolution_percentage = C.AE_PREVIEW_PERCENT
+    scene.cycles.samples = C.AE_PREVIEW_SAMPLES
+    scene.view_settings.exposure = 0.0
+    render.filepath = preview_path
+    try:
+        bpy.ops.render.render(write_still=True)
+        luma = face_exposure_qa(camera, basemesh, eye_mid, iod, preview_path, step=1)["face_mean_luma"]
+    finally:
+        render.resolution_percentage, scene.cycles.samples, render.filepath, scene.view_settings.exposure = saved
+    return luma
+
+
+def auto_exposure(measured_luma: float, reference_luma: float, jitter_ev: float) -> float:
+    """Exposure (EV) that brings the face from measured to reference brightness, + jitter. Sets it."""
+    if measured_luma <= 0.0 or reference_luma <= 0.0:
+        ev = jitter_ev
+    else:
+        ev = C.AE_DISPLAY_GAMMA * math.log2(reference_luma / measured_luma) + jitter_ev
+    ev = max(-C.AE_MAX_EV, min(C.AE_MAX_EV, ev))
+    bpy.context.scene.view_settings.exposure = ev
+    return ev
+
+
+def set_environment(env: dict, background: dict, light: bpy.types.Object, camera: bpy.types.Object,
+                    eye_mid: Vector, hdri_files: dict[str, str]) -> dict:
+    """HDRI world (+ key light scaled down, depth of field) or the flat backdrop. Call after
+    place_key_light. Returns derived values for params.json."""
+    if env["kind"] != "hdri":
+        set_background(background)
+        set_depth_of_field(camera, eye_mid, None)
+        return {}
+    derived = set_hdri_world(hdri_files[env["hdri"]], env["rotation_deg"], env["mean_luminance"])
+    light.data.energy *= env["key_factor"]
+    set_depth_of_field(camera, eye_mid, env["fstop"])
+    return derived
 
 
 def eye_visibility(camera: bpy.types.Object, eyes: bpy.types.Object, centres: dict[str, Vector],

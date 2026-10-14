@@ -15,7 +15,7 @@ ARCFACE_112: list[list[float]] = [
 ]
 
 # Bump whenever sampling changes what a (seed, index) produces; stored in params.json.
-SAMPLER_VERSION = 3
+SAMPLER_VERSION = 4  # 4: auto-exposure, bell-shaped face targets, HDRI backgrounds, beards, greying by age
 
 # ---------------------------------------------------------------------------
 # Output naming
@@ -125,9 +125,14 @@ HAIR_COLORS: dict[str, tuple[float, float, float]] = {
     "grey": (0.350, 0.350, 0.350),
     "white": (0.700, 0.700, 0.680),
 }
-HAIR_COLOR_WEIGHTS: dict[str, float] = {
-    "black": 0.42, "dark_brown": 0.30, "brown": 0.12, "light_brown": 0.06,
-    "blonde": 0.04, "auburn": 0.03, "grey": 0.02, "white": 0.01,
+HAIR_COLOR_WEIGHTS: dict[str, float] = {  # age < HAIR_GREYING_MIN_AGE: no grey / white
+    "black": 0.43, "dark_brown": 0.31, "brown": 0.12, "light_brown": 0.06,
+    "blonde": 0.05, "auburn": 0.03, "grey": 0.0, "white": 0.0,
+}
+HAIR_GREYING_MIN_AGE = 45.0
+HAIR_COLOR_WEIGHTS_GREYING: dict[str, float] = {  # HAIR_GREYING_MIN_AGE .. AGE_BUCKET_MIDDLEAGE_MAX
+    "black": 0.36, "dark_brown": 0.27, "brown": 0.10, "light_brown": 0.05,
+    "blonde": 0.03, "auburn": 0.02, "grey": 0.15, "white": 0.02,
 }
 HAIR_COLOR_WEIGHTS_OLD: dict[str, float] = {  # age > AGE_BUCKET_MIDDLEAGE_MAX
     "black": 0.15, "dark_brown": 0.12, "brown": 0.05, "light_brown": 0.03,
@@ -137,6 +142,49 @@ HAIR_COLOR_VALUE_JITTER = (0.85, 1.15)  # multiplier on the colour
 # Hair styles that cover an eye on a frontal neutral face (blender/debug_hair_audit.py).
 HAIR_STYLE_EXCLUDE: tuple[str, ...] = ("bob01", "bob02", "braid01", "short03")
 
+# Beards (in-house: Blender hair particles on a density map computed from the face geometry;
+# blender/human.py add_beard). Region sizes are in units of the inter-ocular distance (IOD).
+BEARD_NONE = "none"
+BEARD_STYLES: dict[str, dict] = {
+    # skin_cover: how much the skin under the beard takes the beard colour (dense beards hide the
+    # skin; strands are thinner than a pixel at 256 px), then length range (mm), parent strands,
+    # children per parent, region, how far the strands lie down (droop)
+    "stubble": {"skin_cover": 0.5, "length_mm": [0.8, 2.0], "parents": 6000, "children": 6, "region": "full", "droop": 0.0,
+                "root_mm": 0.16, "clump": 0.0, "roughness_mm": 0.1},
+    "short": {"skin_cover": 0.85, "length_mm": [3.0, 7.0], "parents": 5000, "children": 8, "region": "full", "droop": 0.8,
+              "root_mm": 0.16, "clump": 0.2, "roughness_mm": 0.8},
+    "full": {"skin_cover": 0.95, "length_mm": [10.0, 20.0], "parents": 5000, "children": 10, "region": "full_neck", "droop": 1.2,
+             "root_mm": 0.16, "clump": 0.4, "roughness_mm": 2.5},
+    "goatee": {"skin_cover": 0.85, "length_mm": [4.0, 12.0], "parents": 2500, "children": 8, "region": "goatee", "droop": 0.9,
+               "root_mm": 0.16, "clump": 0.25, "roughness_mm": 1.0},
+}
+BEARD_STYLE_WEIGHTS: dict[str, dict[str, float]] = {  # by age bucket, men only (Gulf: beards common)
+    "young": {BEARD_NONE: 0.40, "stubble": 0.25, "short": 0.20, "full": 0.07, "goatee": 0.08},
+    "middleage": {BEARD_NONE: 0.30, "stubble": 0.20, "short": 0.25, "full": 0.15, "goatee": 0.10},
+    "old": {BEARD_NONE: 0.30, "stubble": 0.15, "short": 0.25, "full": 0.22, "goatee": 0.08},
+}
+BEARD_SAME_COLOR_AS_HAIR_PROB = 0.8  # else sampled again (age-dependent weights)
+BEARD_DENSITY_RANGE = [0.6, 1.0]  # overall fill; patchiness comes from BEARD_NOISE_*
+BEARD_NOISE_SCALE_PER_IOD = 2.5  # noise features per IOD
+BEARD_NOISE_AMOUNT_RANGE = [0.2, 0.6]  # 0 = even growth, 1 = very patchy
+BEARD_GEOMETRY = {  # all x IOD; z up, face looks toward -Y
+    "mustache_top_above_lips": 0.30,  # nose base sits above this
+    "nose_half_width": 0.42,  # mustache band; outside it the cheek line takes over
+    "cheek_line_above_lips": 0.32,  # cheek line beside the nose ...
+    "cheek_line_rise": 0.25,  # ... rising toward the ears by this per IOD of |x|
+    "sideburn_top_below_eyes": 0.25,  # near the ears the beard reaches up to here
+    "sideburn_depth": 0.35,  # 'near the ears' = within this in front of the ear centre
+    "front_of_ears_margin": 0.10,  # nothing behind ear centre - this
+    "lip_margin": 0.06,  # keep the lips clear
+    "neck_below_chin": 0.45,  # lower edge under the chin (full beard: + full_neck_extra)
+    "full_neck_extra": 0.35,
+    "goatee_half_width": 0.75,
+    "edge": 0.15,  # soft edge width
+    "chin_search_below_lips": 1.6,  # chin = lowest front midline point within this below the lips
+    "chin_front_depth": 0.3,  # 'front' = within this behind the lips (excludes throat / chest)
+    "goatee_below_chin": 0.1,
+}
+
 # Skin tone bands (for audits / tests): tone < light_max = light, < medium_max = medium, else dark
 SKIN_TONE_BANDS = {"light_max": 0.30, "medium_max": 0.65}
 SKIN_LIGHT_RACES: tuple[str, ...] = ("asian", "caucasian")
@@ -144,6 +192,7 @@ SKIN_DARK_RACE = "african"
 
 # Eyebrow styles are dealt in shuffled blocks of len(EYEBROWS) per job so they come out even.
 EYEBROW_STREAM_ID = 1  # extra seed part for the per-block eyebrow shuffle
+BEARD_STREAM_ID = 2  # own seed stream, so adding beards did not change any other identity value
 
 MAX_IMAGE_ATTEMPTS = 10  # re-sample an image's pose when an eye centre is hidden
 
@@ -195,7 +244,8 @@ DEFAULT_PARAMS: dict = {
     "race_mix": {"african": 0.30, "asian": 0.35, "caucasian": 0.35},
     "race_concentration": 3.0,  # Dirichlet concentration around race_mix (higher = closer)
     "face_targets_count_range": [20, 40],  # at least one per FACE_REGION_RULES region
-    "face_target_strength": 1.0,
+    "face_target_strength": 0.7,  # hard cap on |value| (was a uniform +-1.0 before sampler 4)
+    "face_target_sigma": 0.35,  # values are a normal distribution truncated at +-strength
     # skin tone: 0 = light base texture, 1 = dark (african) base texture; the two are blended.
     # tone = sum(race weight x anchor) + N(0, sigma). With the default race mix this gives
     # ~58% medium (Arab / South Asian range), ~26% dark, ~16% light (see SKIN_TONE_BANDS).
@@ -231,6 +281,20 @@ DEFAULT_PARAMS: dict = {
     # world light on the face, separate from the visible background colour
     "ambient_strength_range": [0.1, 0.4],
     "ambient_tint": 0.3,  # how much of the background colour tints the ambient light (0 = neutral)
+    # per image: HDRI environment (light + visible background) instead of the flat backdrop
+    "hdri_prob": 0.6,
+    "hdri_ids": ["lebombo", "cayley_interior", "wide_street_01", "canary_wharf", "paul_lobe_haus",
+                 "brown_photostudio_02"],  # assets/hdri/hdris.json
+    "hdri_mean_luminance": 0.3,  # HDRI strength normalised to this mean luminance
+    "hdri_key_factor_range": [0.1, 0.8],  # key light x this on HDRI images (environment does the rest)
+    "hdri_fstop_range": [2.8, 8.0],  # depth of field on HDRI images (flat backdrops: none)
+    # per image: auto-exposure like a phone camera. Every image is exposed so the face matches the
+    # identity's own reference brightness (neutral light), +- a small jitter: skin tone differences
+    # between people stay, brightness swings within a person go.
+    "exposure_jitter_ev_sigma": 0.2,
+    "exposure_jitter_ev_limit": 0.5,
+    # beards (men only; styles and weights in BEARD_STYLES / BEARD_STYLE_WEIGHTS)
+    "beard_enabled": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -253,3 +317,14 @@ QA_SAMPLE_STEP_PX = 2  # ray-cast every Nth pixel in x and y
 QA_WHITE_LEVEL = 254.5 / 255.0  # all three channels at or above this = pure white
 QA_MAX_WHITE_FRACTION = 0.01
 QA_NEAR_WHITE_LUMA = 0.95  # stricter "washed out" check: display luma at or above this
+
+# Auto-exposure (blender/scene.py auto_exposure): a small quick render measures the face
+AE_PREVIEW_PERCENT = 25  # of RENDER_RESOLUTION
+AE_PREVIEW_SAMPLES = 8
+AE_DISPLAY_GAMMA = 2.2  # display luma -> approx. linear for the EV step (AgX is close enough)
+AE_MAX_EV = 3.0
+AE_REFERENCE_CAMERA = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0, "distance_m": 0.55, "focal_mm": 50.0,
+                       "face_fill": 0.58}
+AE_REFERENCE_LIGHT = {"azimuth": 25.0, "elevation": 20.0, "kelvin": 5500.0, "intensity": 1.0, "size_m": 0.8}
+AE_REFERENCE_BACKGROUND = {"kind": "solid", "top_rgb": [0.35, 0.35, 0.35], "bottom_rgb": [0.35, 0.35, 0.35],
+                           "ambient_strength": 0.25, "ambient_tint": 0.0}

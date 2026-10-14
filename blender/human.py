@@ -329,6 +329,11 @@ def build_human(identity: dict, face_categories: dict[str, dict]):
     if hair["style"] != C.HAIR_NONE:
         add_hair(basemesh, hair["style"], hair["rgb"])
 
+    beard = identity.get("beard")
+    if beard and beard["style"] != C.BEARD_NONE:
+        eye_mid, iod = eye_geometry(eyes)
+        add_beard(basemesh, beard, eye_mid, iod)
+
     return basemesh, eyes
 
 
@@ -341,6 +346,191 @@ def add_hair(basemesh, style: str, rgb: list[float]) -> list:
     apply_strand_color(hair_obj, rgb)
     add_hair_underlayer(hair_obj, rgb)
     return [hair_obj, bpy.data.objects[f"{hair_obj.name}.{HAIR_UNDERLAYER_SUFFIX}"]]
+
+
+# ---------------------------------------------------------------------------
+# Beard (in-house asset: hair particles on a density map from the face geometry)
+# ---------------------------------------------------------------------------
+BEARD_GROUP = "SynthFaceBeard"
+BEARD_MATERIAL = "SynthFaceBeard"
+BEARD_ATTRIBUTE = "SynthFaceBeard"  # same weights as a point attribute, read by the skin shader
+BEARD_SKIN_NODE = "SynthFaceBeardSkin"
+BEARD_STRAND_ROUGHNESS = 0.55
+BEARD_STRAND_SPECULAR = 0.3
+
+
+def _smoothstep(edge0: float, edge1: float, x: float) -> float:
+    t = min(max((x - edge0) / (edge1 - edge0), 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _world_coords(basemesh) -> np.ndarray:
+    """World-space vertex positions with shape targets applied, in original vertex order
+    (the helper-geometry Mask modifier is switched off while evaluating)."""
+    masks = [m for m in basemesh.modifiers if m.type == "MASK"]
+    states = [m.show_viewport for m in masks]
+    for m in masks:
+        m.show_viewport = False
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    depsgraph.update()
+    evaluated = basemesh.evaluated_get(depsgraph)
+    mesh = evaluated.to_mesh()
+    coords = np.empty(len(mesh.vertices) * 3, dtype=np.float64)
+    mesh.vertices.foreach_get("co", coords)
+    evaluated.to_mesh_clear()
+    for m, state in zip(masks, states):
+        m.show_viewport = state
+    coords = coords.reshape(-1, 3)
+    mw = np.array(basemesh.matrix_world)
+    return coords @ mw[:3, :3].T + mw[:3, 3]
+
+
+def _group_members(basemesh, name: str) -> np.ndarray:
+    index = basemesh.vertex_groups[name].index
+    return np.array([v.index for v in basemesh.data.vertices if any(g.group == index for g in v.groups)])
+
+
+def beard_weights(basemesh, eye_mid: Vector, iod: float, region: str, density: float,
+                  noise_amount: float, noise_offset: tuple[float, float, float]) -> np.ndarray:
+    """Per-vertex beard density 0..1 from the face geometry (all sizes x IOD, see C.BEARD_GEOMETRY)."""
+    from mathutils import noise
+
+    g = C.BEARD_GEOMETRY
+    co = _world_coords(basemesh)
+    body = _group_members(basemesh, "body")
+    lips = co[_group_members(basemesh, "lips")]
+    ears = co[_group_members(basemesh, "ears")]
+    lips_top, lips_bottom = lips[:, 2].max(), lips[:, 2].min()
+    lips_half_width = np.abs(lips[:, 0] - eye_mid.x).max()
+    ear_y = ears[:, 1].mean()
+    chin_area = body[(np.abs(co[body, 0] - eye_mid.x) < 0.25 * iod)
+                     & (co[body, 1] < lips[:, 1].mean() + g["chin_front_depth"] * iod)
+                     & (co[body, 2] < lips_bottom) & (co[body, 2] > lips_bottom - g["chin_search_below_lips"] * iod)]
+    chin_z = co[chin_area, 2].min()
+    edge = g["edge"] * iod
+    neck = {"full_neck": g["neck_below_chin"] + g["full_neck_extra"],
+            "goatee": g["goatee_below_chin"]}.get(region, g["neck_below_chin"])
+    sideburn_top = eye_mid.z - g["sideburn_top_below_eyes"] * iod
+
+    weights = np.zeros(len(co))
+    for i in body:
+        x, y, z = co[i]
+        ax = abs(x - eye_mid.x)
+        if z > sideburn_top + edge or z < chin_z - neck * iod - edge or y > ear_y - g["front_of_ears_margin"] * iod:
+            continue
+        # upper edge: mustache band under the nose, cheek line beside it, sideburns near the ears
+        if ax < g["nose_half_width"] * iod:
+            top = lips_top + g["mustache_top_above_lips"] * iod
+        else:
+            top = lips_top + (g["cheek_line_above_lips"] + g["cheek_line_rise"] * (ax / iod - g["nose_half_width"])) * iod
+        near_ear = _smoothstep(ear_y - (g["sideburn_depth"] + 0.3) * iod, ear_y - g["sideburn_depth"] * iod, y)
+        top = top + near_ear * max(sideburn_top - top, 0.0)
+        w = 1.0 - _smoothstep(top - edge, top, z)
+        w *= _smoothstep(chin_z - neck * iod - edge, chin_z - neck * iod, z)
+        w *= 1.0 - _smoothstep(ear_y - (g["front_of_ears_margin"] + 0.1) * iod, ear_y - g["front_of_ears_margin"] * iod, y)
+        # keep the lips clear
+        if lips_bottom - g["lip_margin"] * iod < z < lips_top + g["lip_margin"] * iod \
+                and ax < lips_half_width + g["lip_margin"] * iod:
+            w = 0.0
+        if region == "goatee":
+            w *= 1.0 - _smoothstep((g["goatee_half_width"] - g["edge"]) * iod, g["goatee_half_width"] * iod, ax)
+        if w <= 0.0:
+            continue
+        p = Vector((x, y, z)) * (C.BEARD_NOISE_SCALE_PER_IOD / iod) + Vector(noise_offset)
+        patch = 0.5 + 0.5 * noise.noise(p)  # 0..1
+        weights[i] = w * density * (1.0 - noise_amount * (1.0 - patch))
+    return weights
+
+
+def apply_beard_skin(basemesh, rgb: list[float], cover: float) -> None:
+    """Skin under the beard takes the beard colour (factor = beard weight x cover): inserted
+    between the HSV shift and Bright/Contrast in the shared skin group, so lips/ears are untouched
+    (their weight is 0)."""
+    tree = _skin_group_nodes(basemesh)[0].node_tree
+    hsv = tree.nodes.get(SKIN_SHIFT_NODE)
+    bright = tree.nodes.get("Bright/Contrast")
+    if hsv is None or bright is None:
+        raise RuntimeError("apply_skin_shift must run before apply_beard_skin")
+    attr = tree.nodes.new("ShaderNodeAttribute")
+    attr.attribute_type = "GEOMETRY"
+    attr.attribute_name = BEARD_ATTRIBUTE
+    amount = tree.nodes.new("ShaderNodeMath")
+    amount.operation = "MULTIPLY"
+    amount.use_clamp = True
+    amount.inputs[1].default_value = cover
+    mix = tree.nodes.new("ShaderNodeMixRGB")
+    mix.name = BEARD_SKIN_NODE
+    mix.inputs["Color2"].default_value = (*rgb, 1.0)
+    tree.links.new(attr.outputs["Fac"], amount.inputs[0])
+    tree.links.new(amount.outputs["Value"], mix.inputs["Fac"])
+    tree.links.new(hsv.outputs["Color"], mix.inputs["Color1"])
+    tree.links.new(mix.outputs["Color"], bright.inputs["Color"])
+
+
+def _mean_strand_length(basemesh, sample: int = 200) -> float:
+    """Mean root-to-tip distance of the first `sample` parent strands (world units)."""
+    evaluated = basemesh.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    psys = evaluated.particle_systems[0]
+    last = 2 ** psys.settings.display_step
+    n = min(sample, len(psys.particles))
+    lengths = [(psys.co_hair(evaluated, particle_no=i, step=last) - psys.co_hair(evaluated, particle_no=i, step=0)).length
+               for i in range(n)]
+    return float(np.mean(lengths)) if lengths else 0.0
+
+
+def add_beard(basemesh, beard: dict, eye_mid: Vector, iod: float) -> None:
+    """Grow the identity's beard (shared.sampling.sample_beard) as hair particles."""
+    style = C.BEARD_STYLES[beard["style"]]
+    weights = beard_weights(basemesh, eye_mid, iod, style["region"], beard["density"], beard["noise_amount"],
+                            tuple(beard["noise_offset"]))
+    group = basemesh.vertex_groups.new(name=BEARD_GROUP)
+    for i in np.nonzero(weights)[0]:
+        group.add([int(i)], float(weights[i]), "REPLACE")
+    attribute = basemesh.data.attributes.new(BEARD_ATTRIBUTE, "FLOAT", "POINT")
+    attribute.data.foreach_set("value", weights.astype(np.float32))
+    apply_beard_skin(basemesh, beard["rgb"], style["skin_cover"])
+
+    # Matte strands: a glossy hair BSDF on sub-pixel strands reads as a light sheen, not a beard.
+    mat = bpy.data.materials.new(BEARD_MATERIAL)
+    mat.use_nodes = True
+    principled = next(n for n in mat.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
+    principled.inputs["Base Color"].default_value = (*beard["rgb"], 1.0)
+    principled.inputs["Roughness"].default_value = BEARD_STRAND_ROUGHNESS
+    principled.inputs["Specular IOR Level"].default_value = BEARD_STRAND_SPECULAR
+    basemesh.data.materials.append(mat)
+
+    mod = basemesh.modifiers.new("SynthFaceBeard", "PARTICLE_SYSTEM")
+    # Hair breaks after a topology-changing modifier (the helper-geometry Mask): put it first.
+    basemesh.modifiers.move(len(basemesh.modifiers) - 1, 0)
+    psys = mod.particle_system
+    psys.seed = beard["particle_seed"]
+    psys.vertex_group_density = BEARD_GROUP
+    ps = psys.settings
+    ps.type = "HAIR"
+    ps.count = style["parents"]
+    ps.hair_length = beard["length_mm"] / 1000.0
+    ps.emit_from = "FACE"
+    ps.use_modifier_stack = False
+    # Direction = surface normal + a downward pull (droop). In "advanced" mode Blender takes the
+    # strand length from that velocity, so set the direction, measure, then rescale to length_mm.
+    ps.use_advanced_hair = True
+    ps.normal_factor = 1.0
+    ps.object_align_factor = (0.0, 0.0, -style["droop"])
+    ps.display_step = ps.render_step = 3
+    measured = _mean_strand_length(basemesh)
+    scale = beard["length_mm"] / 1000.0 / max(measured, 1e-9)
+    ps.normal_factor *= scale
+    ps.object_align_factor = tuple(v * scale for v in ps.object_align_factor)
+    ps.child_type = "INTERPOLATED"
+    ps.child_percent = style["children"]
+    ps.rendered_child_count = style["children"]
+    ps.clump_factor = style["clump"]
+    ps.roughness_1 = style["roughness_mm"] / 1000.0
+    ps.roughness_endpoint = style["roughness_mm"] / 2000.0
+    ps.root_radius = 1.0
+    ps.tip_radius = 0.2
+    ps.radius_scale = style["root_mm"] / 1000.0 / 2.0
+    ps.material_slot = BEARD_MATERIAL
 
 
 def _mhclo_uuid(mhclo_file: str) -> str:

@@ -9,6 +9,7 @@ import copy
 import hashlib
 import math
 import random
+import statistics
 
 from shared import constants as C
 
@@ -111,8 +112,17 @@ def sample_macros(rng: random.Random, params: dict) -> tuple[dict, float]:
     return macros, age_years
 
 
+def _truncated_normal(u: float, sigma: float, cap: float) -> float:
+    """Map u in [-1, 1] (one uniform draw) to N(0, sigma) truncated at +-cap (inverse CDF), so the
+    random stream is the same as for the old uniform values."""
+    dist = statistics.NormalDist(0.0, sigma)
+    lo, hi = dist.cdf(-cap), dist.cdf(cap)
+    q = min(max(lo + (u + 1.0) / 2.0 * (hi - lo), 1e-12), 1.0 - 1e-12)
+    return max(-cap, min(cap, dist.inv_cdf(q)))
+
+
 def sample_face_targets(rng: random.Random, params: dict, categories: dict[str, str]) -> list[dict]:
-    """Pick face target categories ({name: region}) with strength in [-s, s] each.
+    """Pick face target categories ({name: region}); values ~ N(0, sigma) truncated at +-strength.
 
     One category from every region first, then random others up to the sampled count.
     """
@@ -122,9 +132,9 @@ def sample_face_targets(rng: random.Random, params: dict, categories: dict[str, 
     chosen = [rng.choice(sorted(n for n, r in categories.items() if r == region)) for region in regions]
     rest = sorted(set(categories) - set(chosen))
     chosen += rng.sample(rest, count - len(chosen))
-    strength = params["face_target_strength"]
-    return [{"category": name, "region": categories[name], "value": rng.uniform(-strength, strength)}
-            for name in chosen]
+    cap, sigma = params["face_target_strength"], params["face_target_sigma"]
+    return [{"category": name, "region": categories[name],
+             "value": _truncated_normal(rng.uniform(-1.0, 1.0), sigma, cap)} for name in chosen]
 
 
 def dominant_race(macros: dict) -> str:
@@ -202,10 +212,42 @@ def hair_style_weights(sex: str) -> dict[str, float]:
     return {k: v / total for k, v in weights.items()}
 
 
+def hair_color_weights(age_years: float) -> dict[str, float]:
+    """No grey / white before HAIR_GREYING_MIN_AGE, some up to middle age, mostly when old."""
+    if age_bucket(age_years) == "old":
+        return C.HAIR_COLOR_WEIGHTS_OLD
+    return C.HAIR_COLOR_WEIGHTS_GREYING if age_years >= C.HAIR_GREYING_MIN_AGE else C.HAIR_COLOR_WEIGHTS
+
+
+def sample_beard(job_seed: int, identity_index: int, params: dict, sex: str, age_years: float,
+                 hair: dict) -> dict:
+    """Beard style / colour / length / patchiness. Own seed stream (BEARD_STREAM_ID)."""
+    rng = random.Random(derive_seed(job_seed, C.BEARD_STREAM_ID, identity_index))
+    style = C.BEARD_NONE
+    if sex == "male" and params["beard_enabled"]:
+        style = _weighted_choice(rng, C.BEARD_STYLE_WEIGHTS[age_bucket(age_years)])
+    if style == C.BEARD_NONE:
+        return {"style": C.BEARD_NONE}
+    if hair["style"] != C.HAIR_NONE and rng.random() < C.BEARD_SAME_COLOR_AS_HAIR_PROB:
+        color_name = hair["color_name"]
+    else:
+        color_name = _weighted_choice(rng, hair_color_weights(age_years))
+    jitter = _uniform(rng, list(C.HAIR_COLOR_VALUE_JITTER))
+    return {
+        "style": style,
+        "color_name": color_name,
+        "rgb": [c * jitter for c in C.HAIR_COLORS[color_name]],
+        "length_mm": _uniform(rng, C.BEARD_STYLES[style]["length_mm"]),
+        "density": _uniform(rng, C.BEARD_DENSITY_RANGE),
+        "noise_amount": _uniform(rng, C.BEARD_NOISE_AMOUNT_RANGE),
+        "noise_offset": [rng.uniform(-100.0, 100.0) for _ in range(3)],
+        "particle_seed": rng.randrange(1, 2**31),
+    }
+
+
 def sample_hair(rng: random.Random, macros: dict, age_years: float) -> dict:
     style = _weighted_choice(rng, hair_style_weights(sex_of(macros["gender"])))
-    color_weights = C.HAIR_COLOR_WEIGHTS_OLD if age_bucket(age_years) == "old" else C.HAIR_COLOR_WEIGHTS
-    color_name = _weighted_choice(rng, color_weights)
+    color_name = _weighted_choice(rng, hair_color_weights(age_years))
     jitter = _uniform(rng, list(C.HAIR_COLOR_VALUE_JITTER))
     rgb = [c * jitter for c in C.HAIR_COLORS[color_name]]
     return {"style": style, "color_name": color_name, "rgb": rgb}
@@ -220,6 +262,7 @@ def sample_identity(job_seed: int, identity_index: int, params: dict, face_categ
     skin = sample_skin(rng, params, macros, age_years)
     eyes = sample_eyes(rng, macros)
     hair = sample_hair(rng, macros, age_years)
+    brows_lashes = sample_brows_lashes(rng, params, hair, eyebrow_for_identity(job_seed, identity_index))
     return {
         "identity_index": identity_index,
         "seed": seed,
@@ -230,7 +273,8 @@ def sample_identity(job_seed: int, identity_index: int, params: dict, face_categ
         "skin": skin,
         "eyes": eyes,
         "hair": hair,
-        **sample_brows_lashes(rng, params, hair, eyebrow_for_identity(job_seed, identity_index)),
+        **brows_lashes,
+        "beard": sample_beard(job_seed, identity_index, params, sex_of(macros["gender"]), age_years, hair),
     }
 
 
@@ -288,6 +332,19 @@ def sample_background(rng: random.Random, params: dict) -> dict:
     }
 
 
+def sample_environment(rng: random.Random, params: dict) -> dict:
+    """HDRI (light + visible background, with depth of field) or the flat backdrop."""
+    use_hdri = rng.random() < params["hdri_prob"]
+    hdri = rng.choice(params["hdri_ids"])
+    rotation = rng.uniform(0.0, 360.0)
+    key_factor = _uniform(rng, params["hdri_key_factor_range"])
+    fstop = _uniform(rng, params["hdri_fstop_range"])
+    if not use_hdri:
+        return {"kind": "backdrop"}
+    return {"kind": "hdri", "hdri": hdri, "rotation_deg": rotation, "mean_luminance": params["hdri_mean_luminance"],
+            "key_factor": key_factor, "fstop": fstop}
+
+
 def sample_image(job_seed: int, identity_index: int, image_index: int, params: dict, attempt: int = 0) -> dict:
     """Per-image params. attempt > 0 = deterministic re-sample (e.g. an eye was hidden)."""
     parts = (job_seed, identity_index, image_index) + ((attempt,) if attempt else ())
@@ -300,4 +357,7 @@ def sample_image(job_seed: int, identity_index: int, image_index: int, params: d
         "camera": sample_camera(rng, params),
         "light": sample_light(rng, params),
         "background": sample_background(rng, params),
+        # drawn last so camera / light / backdrop stay as in sampler 3 for the same seed
+        "environment": sample_environment(rng, params),
+        "exposure_jitter_ev": _near_frontal(rng, params["exposure_jitter_ev_sigma"], params["exposure_jitter_ev_limit"]),
     }
