@@ -60,8 +60,11 @@ def identity_label(identity_dir: Path) -> tuple[str, bool]:
     lines += [
         f"h{skin['hue_shift']:+.3f} s{skin['saturation']:.2f} v{skin['value']:.2f}",
         f"eyes {ident['eyes'].get('color', ident['eyes'].get('material'))}",
-        f"hair {ident['hair']['style']}  brow {ident.get('eyebrows', '')[-3:]}",
+        f"hair {ident['hair']['style']} {ident['hair'].get('color_name', '')}  brow {ident.get('eyebrows', '')[-3:]}",
     ]
+    beard = ident.get("beard", {})
+    if beard.get("style", "none") != "none":
+        lines.append(f"beard {beard['style']} {beard['length_mm']:.0f}mm {beard['color_name']}")
     return "\n".join(lines), True
 
 

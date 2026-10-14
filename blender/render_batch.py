@@ -8,7 +8,8 @@ job.json (written by the app; output goes next to it):
     {
       "job_id": "...", "seed": 123, "num_identities": 3, "images_per_identity": 4,
       "render": {"samples": 48, "device": "CPU"},   # optional; else env, else defaults
-      "params": {...}                                 # optional overrides of DEFAULT_PARAMS
+      "params": {...},                                # optional overrides of DEFAULT_PARAMS
+      "identity_indices": [3, 7]                      # optional: only these identities (default 1..N)
     }
 
 stdout: one JSON line per finished identity ({"event": "identity_done", "index": i}).
@@ -36,6 +37,16 @@ from shared import constants as C  # noqa: E402
 from shared import sampling  # noqa: E402
 
 FACE_TARGETS_FILE = PROJECT_ROOT / "config" / "face_targets.json"
+HDRI_DIR = PROJECT_ROOT / "assets" / "hdri"
+
+
+def hdri_files(ids: list[str]) -> dict[str, str]:
+    """{hdri id: file path} from assets/hdri/hdris.json; fails early if a file is missing."""
+    known = {h["id"]: HDRI_DIR / h["file"] for h in json.loads((HDRI_DIR / "hdris.json").read_text(encoding="utf-8"))}
+    missing = [i for i in ids if i not in known or not known[i].exists()]
+    if missing:
+        raise FileNotFoundError(f"HDRIs missing: {missing} (download them with colab/setup_colab.sh)")
+    return {i: str(known[i]) for i in ids}
 
 log = logging.getLogger("render_batch")
 
@@ -66,7 +77,8 @@ def render_settings(job: dict) -> tuple[int, str]:
     return samples, device
 
 
-def render_identity(job: dict, params: dict, index: int, categories: dict[str, dict], out_dir: Path) -> dict:
+def render_identity(job: dict, params: dict, index: int, categories: dict[str, dict], out_dir: Path,
+                    hdris: dict[str, str]) -> dict:
     identity = sampling.sample_identity(job["seed"], index, params, {n: c["region"] for n, c in categories.items()})
     record: dict = {"identity_id": C.IDENTITY_DIR_FMT.format(index), "status": "running",
                     "sampler_version": C.SAMPLER_VERSION, "identity": identity, "images": []}
@@ -84,6 +96,14 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
     camera, light = scene.create_rig()
     record["build_seconds"] = time.perf_counter() - t0
 
+    # Auto-exposure reference: this person's face brightness under neutral light at exposure 0.
+    preview = str(out_dir / "ae_preview.png")
+    scene.place_camera(camera, eye_mid, iod, C.AE_REFERENCE_CAMERA)
+    scene.place_key_light(light, eye_mid, C.AE_REFERENCE_LIGHT)
+    scene.set_environment({"kind": "backdrop"}, C.AE_REFERENCE_BACKGROUND, light, camera, eye_mid, hdris)
+    reference_luma = scene.preview_face_luma(camera, basemesh, eye_mid, iod, preview)
+    record["exposure_reference_luma"] = reference_luma
+
     for image_index in range(1, job["images_per_identity"] + 1):
         rejected = []
         for attempt in range(C.MAX_IMAGE_ATTEMPTS):
@@ -98,7 +118,11 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
                         record["identity_id"], image_index, C.MAX_IMAGE_ATTEMPTS)
         image["rejected_attempts"] = rejected
         scene.place_key_light(light, eye_mid, image["light"])
-        scene.set_background(image["background"])
+        image["environment_derived"] = scene.set_environment(image["environment"], image["background"], light,
+                                                             camera, eye_mid, hdris)
+        measured = scene.preview_face_luma(camera, basemesh, eye_mid, iod, preview)
+        image["exposure"] = {"preview_face_luma": measured,
+                             "ev": scene.auto_exposure(measured, reference_luma, image["exposure_jitter_ev"])}
         image["applied_skin"] = human.read_applied_skin(basemesh)  # proof: same for every image
 
         rel = Path("raw") / (C.IMAGE_STEM_FMT.format(image_index) + ".png")
@@ -112,6 +136,7 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
         log.info("%s %s rendered in %.1fs, face white %.2f%%", record["identity_id"], rel,
                  image["render_seconds"], 100 * image["qa"]["face_white_fraction"])
 
+    Path(preview).unlink(missing_ok=True)
     record["status"] = "done"
     return record
 
@@ -135,13 +160,15 @@ def main() -> None:
 
     samples, device = render_settings(job)
     human.load_mpfb()
-    total = job["num_identities"]
+    hdris = hdri_files(params["hdri_ids"])
+    indices = job.get("identity_indices") or list(range(1, job["num_identities"] + 1))
+    total = len(indices)
     progress_file = job_dir / "progress.json"
     write_json(progress_file, {"done": 0, "total": total, "status": "running"})
     log.info("Job %s: %d identities x %d images, %d samples on %s",
              job.get("job_id"), total, job["images_per_identity"], samples, device)
 
-    for index in range(1, total + 1):
+    for done, index in enumerate(indices, start=1):
         out_dir = job_dir / C.IDENTITY_DIR_FMT.format(index)
         if args.resume and already_done(out_dir):
             emit({"event": "identity_done", "index": index, "status": "done", "skipped": True})
@@ -150,7 +177,7 @@ def main() -> None:
         t0 = time.perf_counter()
         try:
             scene.configure_render(samples, device)
-            record = render_identity(job, params, index, categories, out_dir)
+            record = render_identity(job, params, index, categories, out_dir, hdris)
         except Exception:  # one bad identity must not kill the batch
             log.exception("Identity %d failed", index)
             record = {"identity_id": C.IDENTITY_DIR_FMT.format(index), "status": "failed",
@@ -158,7 +185,7 @@ def main() -> None:
         record["total_seconds"] = time.perf_counter() - t0
         record["render"] = {"samples": samples, "device": device, "resolution": C.RENDER_RESOLUTION}
         write_json(out_dir / "params.json", record)
-        write_json(progress_file, {"done": index, "total": total, "status": "running"})
+        write_json(progress_file, {"done": done, "total": total, "status": "running"})
         emit({"event": "identity_done", "index": index, "status": record["status"]})
 
     write_json(progress_file, {"done": total, "total": total, "status": "rendered"})

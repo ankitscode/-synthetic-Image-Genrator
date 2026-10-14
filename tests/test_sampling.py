@@ -107,7 +107,8 @@ def test_face_targets_count_strength_and_regions() -> None:
         targets = ident["face_targets"]
         assert lo <= len(targets) <= hi
         assert len({t["category"] for t in targets}) == len(targets)
-        assert all(t["category"] in CATEGORIES and -1.0 <= t["value"] <= 1.0 for t in targets)
+        cap = PARAMS["face_target_strength"]
+        assert all(t["category"] in CATEGORIES and -cap <= t["value"] <= cap for t in targets)
         assert {t["region"] for t in targets} == REGIONS  # at least one per region
 
 
@@ -226,10 +227,60 @@ def test_hair_colour_mostly_dark() -> None:
 
 
 def test_weight_tables_sum_to_one() -> None:
-    tables = [*C.EYE_COLOR_WEIGHTS_BY_RACE.values(), C.HAIR_COLOR_WEIGHTS, C.HAIR_COLOR_WEIGHTS_OLD,
-              *C.HAIR_STYLE_WEIGHTS.values()]
+    tables = [*C.EYE_COLOR_WEIGHTS_BY_RACE.values(), C.HAIR_COLOR_WEIGHTS, C.HAIR_COLOR_WEIGHTS_GREYING,
+              C.HAIR_COLOR_WEIGHTS_OLD, *C.HAIR_STYLE_WEIGHTS.values(), *C.BEARD_STYLE_WEIGHTS.values()]
     for table in tables:
         assert sum(table.values()) == pytest.approx(1.0)
+
+
+def test_face_targets_mostly_moderate() -> None:
+    values = [abs(t["value"]) for i in identities() for t in i["face_targets"]]
+    assert sum(v > 0.6 for v in values) / len(values) < 0.15  # was ~40% with uniform +-1.0
+    assert sum(v < 0.3 for v in values) / len(values) > 0.5
+
+
+def test_no_grey_or_white_hair_before_greying_age() -> None:
+    for ident in identities(n=2000):
+        if ident["age_years"] < C.HAIR_GREYING_MIN_AGE:
+            assert ident["hair"]["color_name"] not in ("grey", "white")
+            if ident["beard"]["style"] != C.BEARD_NONE:
+                assert ident["beard"]["color_name"] not in ("grey", "white")
+
+
+def test_beards_men_only_and_common() -> None:
+    ids = identities(n=2000)
+    assert all(i["beard"]["style"] == C.BEARD_NONE for i in ids if i["sex"] == "female")
+    men = [i for i in ids if i["sex"] == "male"]
+    bearded = [i for i in men if i["beard"]["style"] != C.BEARD_NONE]
+    assert 0.55 < len(bearded) / len(men) < 0.8
+    assert {i["beard"]["style"] for i in bearded} == set(C.BEARD_STYLES)
+    for i in bearded:
+        b = i["beard"]
+        assert in_range(b["length_mm"], C.BEARD_STYLES[b["style"]]["length_mm"])
+        assert in_range(b["density"], C.BEARD_DENSITY_RANGE)
+
+
+def test_beard_stream_does_not_change_other_identity_values() -> None:
+    off = sampling.resolve_params({"beard_enabled": False})
+    for i in range(1, 50):
+        a = sampling.sample_identity(7, i, PARAMS, CATEGORIES)
+        b = sampling.sample_identity(7, i, off, CATEGORIES)
+        assert {k: v for k, v in a.items() if k != "beard"} == {k: v for k, v in b.items() if k != "beard"}
+
+
+def test_environment_mix_and_exposure_jitter() -> None:
+    imgs = images(n=2000)
+    hdri = [i["environment"] for i in imgs if i["environment"]["kind"] == "hdri"]
+    assert abs(len(hdri) / len(imgs) - PARAMS["hdri_prob"]) < 0.05
+    assert {e["hdri"] for e in hdri} == set(PARAMS["hdri_ids"])
+    assert all(in_range(e["fstop"], PARAMS["hdri_fstop_range"]) for e in hdri)
+    limit = PARAMS["exposure_jitter_ev_limit"]
+    assert all(abs(i["exposure_jitter_ev"]) <= limit for i in imgs)
+
+
+def test_hdri_ids_exist_in_manifest() -> None:
+    manifest = json.loads((Path(__file__).parent.parent / "assets" / "hdri" / "hdris.json").read_text())
+    assert set(PARAMS["hdri_ids"]) <= {h["id"] for h in manifest}
 
 
 # --- per image -------------------------------------------------------------------
@@ -282,7 +333,7 @@ def test_override_applies() -> None:
 def test_shared_is_stdlib_only() -> None:
     import ast
 
-    stdlib = {"colorsys", "copy", "hashlib", "math", "random", "shared", "__future__"}
+    stdlib = {"colorsys", "copy", "hashlib", "math", "random", "statistics", "shared", "__future__"}
     for path in (Path(__file__).parent.parent / "shared").glob("*.py"):
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):

@@ -17,7 +17,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 FACE_TARGETS = json.loads((PROJECT_ROOT / "config" / "face_targets.json").read_text())
 CATEGORIES = {c["name"]: c["region"] for c in FACE_TARGETS["categories"]}
 SKIN_KEYS = ("hue_shift", "saturation", "value", "roughness", "specular", "clearcoat", "tone")
-PER_IMAGE_RENDER_KEYS = ("derived", "eye_visibility", "rejected_attempts", "applied_skin", "render_seconds", "file", "qa")
+PER_IMAGE_RENDER_KEYS = ("derived", "eye_visibility", "rejected_attempts", "applied_skin", "render_seconds", "file", "qa",
+                         "environment_derived", "exposure")
 FLOAT32_TOL = 1e-5  # Blender stores node values as float32
 
 
