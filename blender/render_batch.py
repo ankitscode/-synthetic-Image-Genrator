@@ -142,11 +142,19 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
 
 
 def already_done(out_dir: Path) -> bool:
+    """True when this identity was rendered by the current sampler. An identity from an older
+    sampler is an error: resuming would silently mix two code versions in one job."""
     params_file = out_dir / "params.json"
     try:
-        return json.loads(params_file.read_text(encoding="utf-8")).get("status") == "done"
+        record = json.loads(params_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return False
+    if record.get("status") != "done":
+        return False
+    if record.get("sampler_version") != C.SAMPLER_VERSION:
+        raise SystemExit(f"{params_file} was made with sampler {record.get('sampler_version')}, this code is "
+                         f"sampler {C.SAMPLER_VERSION}: use a new job id instead of --resume")
+    return True
 
 
 def main() -> None:
