@@ -60,6 +60,7 @@ REF_SHOT = "s1"
 VAR_SHOTS = ["s2", "s3", "s6"]
 STEPS = 18  # DPM++ 2M Karras; x strength 0.55 -> 9 denoising steps
 NEGATIVE_EXTRA = ", earring, earrings, jewelry, piercing, tattoo, necklace"
+NEGATIVE_NO_BEARD = ", beard, stubble, mustache, goatee"
 BLIND_SEED = 2027
 BLIND_PAIRS_EACH = 6
 steps = STEPS  # --steps
@@ -83,8 +84,21 @@ def prompt(person: str) -> str:
         desc = "with a shaved bald head"
     else:
         desc = f"with {HAIR_STYLE_WORDS.get(hair['style'], '')} {hair['color_name'].replace('_', ' ')} hair"
+    beard = meta.get("beard", {"style": "none"})
+    if meta["sex"] == "male":
+        color = beard.get("color_name", "").replace("_", " ")
+        desc += {"none": ", clean-shaven", "stubble": f" and light {color} stubble",
+                 "short": f" and a short trimmed {color} beard", "full": f" and a full {color} beard",
+                 "goatee": f" and a {color} goatee with mustache"}[beard["style"]]
     noun = "woman" if meta["sex"] == "female" else "man"
     return rt.PROMPT.replace("a man", f"a {noun}").format(hair=" " + " ".join(desc.split()))
+
+
+def negative(person: str) -> str:
+    """No facial hair for women and clean-shaven men (SD tends to add stubble)."""
+    meta = rt.shot_meta(person, REF_SHOT)
+    no_beard = meta.get("sex") == "female" or meta.get("beard", {}).get("style") == "none"
+    return NEGATIVE + NEGATIVE_EXTRA + (NEGATIVE_NO_BEARD if "sex" in meta and no_beard else "")
 
 
 def generate() -> None:
@@ -106,7 +120,7 @@ def generate() -> None:
             return
         t0 = time.perf_counter()
         with torch.inference_mode():
-            image = pipe(prompt=prompt(person), negative_prompt=NEGATIVE + NEGATIVE_EXTRA,
+            image = pipe(prompt=prompt(person), negative_prompt=negative(person),
                          image=rt.sd_input(person, shot), control_image=rt.load_rgb(rt.shot_png(person, shot, "_depth")),
                          strength=strength, controlnet_conditioning_scale=rt.CONTROLNET_SCALE,
                          num_inference_steps=steps, guidance_scale=GUIDANCE,
@@ -115,7 +129,7 @@ def generate() -> None:
         seconds = time.perf_counter() - t0
         rec = {"person": person, "shot": shot, "strength": strength, "seed": rt.SEED, "steps": steps,
                "scheduler": "DPMSolverMultistep karras", "ip_adapter": "ip_adapter_image_embeds" in extra,
-               "device": DEVICE, "prompt": prompt(person), "negative_extra": NEGATIVE_EXTRA, "seconds": round(seconds, 1)}
+               "device": DEVICE, "prompt": prompt(person), "negative_prompt": negative(person), "seconds": round(seconds, 1)}
         with RUNS.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec) + "\n")
         log.info("%s %s done in %.0fs", person, shot, seconds)

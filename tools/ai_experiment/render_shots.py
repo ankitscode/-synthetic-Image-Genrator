@@ -48,6 +48,7 @@ MAIN_PERSON = 11
 CONTROL_PEOPLE = [2, 5, 8, 12]  # other men from the same job, so the test is not too easy
 CONTROL_SHOTS = ["s1", "s2", "s3", "s6"]
 SIZE = 512
+MAP_DOWNSCALE = 2  # depth / normal / mask maps ray-cast at SIZE / 2 and upsampled (4x faster; Colab has 2 vCPUs)
 SAMPLES = 48
 HDRI_MEAN_LUMINANCE = 0.3
 HDRI_KEY_FACTOR = 0.5
@@ -79,6 +80,10 @@ def hair_objects() -> set:
     return {o for u in under for o in (u, bpy.data.objects[u.name.rsplit(".", 1)[0]])}
 
 
+def _upsample(a: np.ndarray) -> np.ndarray:
+    return np.repeat(np.repeat(a, MAP_DOWNSCALE, axis=0), MAP_DOWNSCALE, axis=1)
+
+
 def ray_maps(camera, basemesh, eye_mid, iod) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Per-pixel inverse depth, camera-space normal, face mask and hair mask by ray casting."""
     scn = bpy.context.scene
@@ -89,15 +94,16 @@ def ray_maps(camera, basemesh, eye_mid, iod) -> tuple[np.ndarray, np.ndarray, np
     origin = camera.matrix_world.translation
     centre = scene.face_centre(eye_mid, iod)
     radius = C.QA_FACE_RADIUS_PER_IOD * iod
-    depth = np.zeros((SIZE, SIZE), np.float32)
-    normal = np.zeros((SIZE, SIZE, 3), np.float32)
-    mask = np.zeros((SIZE, SIZE), np.uint8)
-    hair = np.zeros((SIZE, SIZE), np.uint8)
+    grid = SIZE // MAP_DOWNSCALE
+    depth = np.zeros((grid, grid), np.float32)
+    normal = np.zeros((grid, grid, 3), np.float32)
+    mask = np.zeros((grid, grid), np.uint8)
+    hair = np.zeros((grid, grid), np.uint8)
     hair_objs = hair_objects()
-    for py in range(SIZE):
-        v = (py + 0.5) / SIZE
-        for px in range(SIZE):
-            u = (px + 0.5) / SIZE
+    for py in range(grid):
+        v = (py + 0.5) / grid
+        for px in range(grid):
+            u = (px + 0.5) / grid
             local = top_left + (top_right - top_left) * u + (bottom_left - top_left) * v
             direction = (rot @ local).normalized()
             hit, location, n, _, obj, _ = scn.ray_cast(depsgraph, origin, direction)
@@ -112,7 +118,7 @@ def ray_maps(camera, basemesh, eye_mid, iod) -> tuple[np.ndarray, np.ndarray, np
     hits = depth > 0
     lo, hi = depth[hits].min(), depth[hits].max()
     depth[hits] = 0.1 + 0.9 * (depth[hits] - lo) / max(hi - lo, 1e-6)  # near = 1.0, far hit = 0.1
-    return depth, normal, mask, hair
+    return _upsample(depth), _upsample(normal), _upsample(mask), _upsample(hair)
 
 
 def save_gray(path: Path, arr: np.ndarray) -> None:
@@ -187,7 +193,8 @@ def render_person(index: int, shot_ids: list[str], categories: dict, params: dic
         meta = {"person": f"id_{index:05d}", "shot": shot, "yaw": yaw, "pitch": pitch, "lighting": lighting,
                 "camera": cam, "derived": derived, "eyes_px": eyes_px, "face_mask_pixels": int((mask > 0).sum()),
                 "job_seed": job_seed, "identity_seed": ident["seed"], "sex": ident["sex"],
-                "age_years": ident["age_years"], "hair": ident["hair"], "skin": ident["skin"]}
+                "age_years": ident["age_years"], "hair": ident["hair"], "beard": ident["beard"],
+                "skin": ident["skin"]}
         (person_dir / f"{shot}.json").write_text(json.dumps(meta, indent=2) + "\n", encoding="utf-8")
         print(f"SHOT id_{index:05d} {shot} yaw={yaw:+.0f} pitch={pitch:+.0f} {lighting} mask={meta['face_mask_pixels']}")
 
