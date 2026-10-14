@@ -101,6 +101,18 @@ def negative(person: str) -> str:
     return NEGATIVE + NEGATIVE_EXTRA + (NEGATIVE_NO_BEARD if "sex" in meta and no_beard else "")
 
 
+def free_vram() -> None:
+    gc.collect()
+    if DEVICE == "cuda":
+        torch.cuda.empty_cache()
+
+
+def log_vram(stage: str) -> None:
+    if DEVICE == "cuda":
+        log.info("GPU memory %s: %.1f GB allocated, %.1f GB reserved", stage,
+                 torch.cuda.memory_allocated() / 1e9, torch.cuda.memory_reserved() / 1e9)
+
+
 def generate() -> None:
     controlnet = ControlNetModel.from_pretrained(
         snapshot_download(CONTROLNET_ID, revision=CONTROLNET_REVISION, allow_patterns=CONTROLNET_FILES),
@@ -108,11 +120,14 @@ def generate() -> None:
     pipe = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
         snapshot_download(MODEL_ID, revision=MODEL_REVISION, allow_patterns=MODEL_FILES), controlnet=controlnet,
         torch_dtype=DTYPE, variant="fp16", safety_checker=None, feature_extractor=None,
-        requires_safety_checker=False).to(DEVICE)
+        requires_safety_checker=False)
     pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config, use_karras_sigmas=True)
     pipe.unet.to(memory_format=torch.channels_last)
     pipe.controlnet.to(memory_format=torch.channels_last)
     pipe.set_progress_bar_config(disable=True)
+    if DEVICE == "cuda":
+        pipe.enable_model_cpu_offload()  # each model on the GPU only while it runs (T4: 15 GB was not enough)
+    log_vram("pipeline loaded")
 
     def run(person: str, shot: str, strength: float, **extra) -> None:
         out = out_png(person, shot)
@@ -126,6 +141,8 @@ def generate() -> None:
                          num_inference_steps=steps, guidance_scale=GUIDANCE,
                          generator=torch.Generator("cpu").manual_seed(rt.SEED), **extra).images[0]
         image.save(out)
+        del image
+        free_vram()
         seconds = time.perf_counter() - t0
         rec = {"person": person, "shot": shot, "strength": strength, "seed": rt.SEED, "steps": steps,
                "scheduler": "DPMSolverMultistep karras", "ip_adapter": "ip_adapter_image_embeds" in extra,
@@ -136,21 +153,26 @@ def generate() -> None:
 
     for person in PEOPLE:
         run(person, REF_SHOT, rt.REF_STRENGTH)
+    log_vram("references done")
 
     ipa_dir = snapshot_download(rt.IPA_ID, revision=rt.IPA_REVISION, allow_patterns=rt.IPA_FILES)
     if all(out_png(p, s).exists() for p in PEOPLE for s in VAR_SHOTS):
         return
     pipe.load_ip_adapter(ipa_dir, subfolder="models", weight_name=rt.IPA_WEIGHT,
                          image_encoder_folder="image_encoder", torch_dtype=DTYPE)
-    pipe.image_encoder.to(DEVICE)
-    pipe.set_ip_adapter_scale(rt.IPA_SCALE)
-    embeds = {p: pipe.prepare_ip_adapter_image_embeds(
-        ip_adapter_image=[Image.open(out_png(p, REF_SHOT)).convert("RGB")], ip_adapter_image_embeds=None,
-        device=DEVICE, num_images_per_prompt=1, do_classifier_free_guidance=True) for p in PEOPLE}
-    pipe.image_encoder = None  # free ~2.5 GB before the variations
-    gc.collect()
     if DEVICE == "cuda":
-        torch.cuda.empty_cache()
+        pipe.enable_model_cpu_offload()  # again, so the new image encoder is offloaded too
+    pipe.set_ip_adapter_scale(rt.IPA_SCALE)
+    log_vram("IP-Adapter loaded")
+    embeds = {}
+    with torch.inference_mode():
+        for p in PEOPLE:
+            embeds[p] = pipe.prepare_ip_adapter_image_embeds(
+                ip_adapter_image=[Image.open(out_png(p, REF_SHOT)).convert("RGB")], ip_adapter_image_embeds=None,
+                device=DEVICE, num_images_per_prompt=1, do_classifier_free_guidance=True)
+    pipe.image_encoder = None  # embeddings are computed once; free the encoder before the variations
+    free_vram()
+    log_vram("embeddings done")
     for person in PEOPLE:
         for shot in VAR_SHOTS:
             run(person, shot, rt.VAR_STRENGTH, ip_adapter_image_embeds=embeds[person])
