@@ -1,0 +1,6 @@
+{
+  "comment": "MPFB basemesh vertex indices (same topology for every identity), chosen on the default human. nose_tip = most forward midline vertex between eyes and lips; mouth corners = outermost 'lips' vertices that a frontal camera can see (the visible commissure; the outermost lips vertices overall, 7302/561, lie ~11 mm inside the mouth). Mirror pair. Subject's left = +X. Confirm with tools/landmark_sheet.py before use.",
+  "nose_tip": 5054,
+  "mouth_subject_left": 7129,
+  "mouth_subject_right": 369
+}
