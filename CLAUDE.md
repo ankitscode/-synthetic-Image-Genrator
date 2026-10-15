@@ -199,6 +199,7 @@ Per identity (fixed for all images of that identity):
 | eyebrows | 12 styles dealt evenly (each once per 12 identities); colour = hair colour × 0.45–1.1 |
 | hair | excluded (cover an eye, see `blender/debug_hair_audit.py`): bob01, bob02, braid01, short03; colour: no grey/white under 45, some 45–55, mostly over 55 |
 | beard (men) | in-house particle beards (`human.add_beard`, audit `blender/debug_beard.py`): none / stubble / short / full / goatee, ~65% of men (weights by age, `BEARD_STYLE_WEIGHTS`); region computed from each face (lips, ears, chin), patchy density, skin under the beard tinted; colour = hair colour (80%); own seed stream |
+| distinct identities | `blender/select_identities.py` walks indices and rejects **near-duplicates** (face-shape RMS < 0.025 IOD ≈ 1.6 mm, same sex, skin tone within 0.08: same face under different hair = label noise; 3 of 403 at seed 20261013). **Look-alikes** (shape < 0.065 IOD + ≥3 shared traits) are only reported (~5% of pairs; useful hard negatives). Rules in `shared/similarity.py`; check a job with `tools/validate_job.py` |
 
 Per image:
 
