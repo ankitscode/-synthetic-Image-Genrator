@@ -7,9 +7,9 @@ aligned/ (app/postprocess.py), face_shape.json (blender/face_shape_distance.py).
 
 1. Landmarks: all 5 visible, inside the frame, aligned residual small.
 2. Same person in every image: identity values and the applied skin are identical across images.
-3. Different people: 3D face-shape distance (IOD units) to the nearest other identity, combined
-   with appearance (sex, skin tone, eyes, hair, beard). A pair is flagged for review when the
-   shapes are close AND the appearance is alike.
+3. Different people: 3D face-shape distance (IOD units) between every pair, with the shared rules
+   (shared/similarity.py): near-duplicates (practically the same face) fail the check;
+   look-alikes (similar shape + shared hair / skin / sex...) are listed for a visual look.
 Writes <job>/validation.json and <job>/validation_pairs.png (closest pairs side by side).
 """
 
@@ -20,9 +20,10 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from shared import similarity  # noqa: E402
+
 RESIDUAL_FLAG_PX = 6.0  # aligned residual above this (template pixels, 112 crop) = review
-SHAPE_CLOSE_IOD = 0.045  # face-shape RMS distance below this (~2.8 mm) counts as close
-TONE_CLOSE = 0.10  # skin tone difference below this counts as alike
 SKIN_MATCH_TOL = 1e-4  # applied skin values may differ only by float noise between images
 PAIRS_SHOWN = 6
 TILE = 160
@@ -33,22 +34,6 @@ def appearance(identity: dict) -> dict:
     return {"sex": identity["sex"], "tone": identity["skin"]["tone"], "eyes": identity["eyes"]["color"],
             "hair": f"{identity['hair']['style']} {identity['hair']['color_name']}", "beard": beard,
             "age": round(identity["age_years"])}
-
-
-def alike(a: dict, b: dict) -> list[str]:
-    """What two identities share (empty = clearly different appearance)."""
-    same = []
-    if a["sex"] == b["sex"]:
-        same.append("sex")
-    if abs(a["tone"] - b["tone"]) < TONE_CLOSE:
-        same.append("skin tone")
-    if a["hair"] == b["hair"]:
-        same.append("hair")
-    if a["sex"] == b["sex"] == "male" and a["beard"] == b["beard"]:
-        same.append("beard")
-    if a["eyes"] == b["eyes"]:
-        same.append("eyes")
-    return same
 
 
 def frontal_aligned(identity_dir: Path, record: dict) -> Image.Image:
@@ -95,13 +80,17 @@ def main() -> int:
     looks = {n: appearance(records[n]["identity"]) for n in ids}
     pairs = []
     for i, j in combinations(range(len(ids)), 2):
-        shared = alike(looks[ids[i]], looks[ids[j]])
-        pairs.append({"a": ids[i], "b": ids[j], "shape_iod": dist[i][j], "shape_mm": round(dist[i][j] * shape["typical_iod_mm"], 2),
-                      "shared": shared, "review": dist[i][j] < SHAPE_CLOSE_IOD and {"sex", "skin tone"} <= set(shared)})
+        ia, ib = records[ids[i]]["identity"], records[ids[j]]["identity"]
+        shared = similarity.shared_traits(ia, ib)
+        d = dist[i][j]
+        pairs.append({"a": ids[i], "b": ids[j], "shape_iod": d, "shape_mm": round(d * shape["typical_iod_mm"], 2),
+                      "shared": shared, "near_duplicate": similarity.near_duplicate(d, ia, ib),
+                      "review": similarity.too_similar(d, shared)})
     pairs.sort(key=lambda p: p["shape_iod"])
     nearest = {n: min((p for p in pairs if n in (p["a"], p["b"])), key=lambda p: p["shape_iod"]) for n in ids}
     report["pairs"] = {"count": len(pairs), "shape_iod_min": pairs[0]["shape_iod"],
                        "shape_iod_median": pairs[len(pairs) // 2]["shape_iod"],
+                       "near_duplicates": [p for p in pairs if p["near_duplicate"]],
                        "review": [p for p in pairs if p["review"]], "closest": pairs[:PAIRS_SHOWN],
                        "nearest_per_identity": {n: {"other": p["b"] if p["a"] == n else p["a"], "shape_iod": p["shape_iod"]}
                                                 for n, p in nearest.items()}}
@@ -112,7 +101,7 @@ def main() -> int:
     rows = pairs[:PAIRS_SHOWN] + [p for p in pairs[PAIRS_SHOWN:] if p["review"]]
     sheet = Image.new("RGB", (2 * TILE + 260, 22 + len(rows) * (TILE + 6)), (24, 24, 24))
     draw = ImageDraw.Draw(sheet)
-    draw.text((6, 5), f"{job.name}: the {PAIRS_SHOWN} most similar face shapes + pairs flagged for review", fill=(230, 230, 230), font=font)
+    draw.text((6, 5), f"{job.name}: the {PAIRS_SHOWN} most similar face shapes + look-alikes", fill=(230, 230, 230), font=font)
     for r, p in enumerate(rows):
         y = 22 + r * (TILE + 6)
         sheet.paste(frontal_aligned(job / p["a"], records[p["a"]]), (6, y))
@@ -121,7 +110,7 @@ def main() -> int:
         text = (f"{p['a']} vs {p['b']}\nshape {p['shape_iod']:.3f} IOD (~{p['shape_mm']} mm)\n"
                 f"shared: {', '.join(p['shared']) or 'nothing'}\n{a['sex']} {a['age']}y / {b['sex']} {b['age']}y\n"
                 f"tone {a['tone']:.2f} / {b['tone']:.2f}\n{a['hair']} /\n{b['hair']}\nbeard {a['beard']} / {b['beard']}\n"
-                f"{'REVIEW' if p['review'] else 'ok'}")
+                f"{'NEAR-DUPLICATE' if p['near_duplicate'] else 'look-alike' if p['review'] else 'ok'}")
         draw.multiline_text((2 * TILE + 16, y + 4), text, fill=(230, 230, 230), font=font, spacing=2)
     sheet.save(job / "validation_pairs.png")
 
@@ -129,9 +118,10 @@ def main() -> int:
     print(f"LANDMARKS  {lm['images']} images, flagged {len(lm['flagged'])}, residual median {lm['residual_px_median']:.2f} px, max {lm['residual_px_max']:.2f} px")
     print(f"SAME PERSON  {len(records)} identities, inconsistent {len(inconsistent)}")
     pr = report["pairs"]
-    print(f"DIFFERENT   {pr['count']} pairs, face shape min {pr['shape_iod_min']:.3f} / median {pr['shape_iod_median']:.3f} IOD, review {len(pr['review'])}")
+    print(f"DIFFERENT   {pr['count']} pairs, face shape min {pr['shape_iod_min']:.3f} / median {pr['shape_iod_median']:.3f} IOD, "
+          f"near-duplicates {len(pr['near_duplicates'])}, look-alikes {len(pr['review'])}")
     for p in pr["closest"]:
-        print(f"  {p['a']} vs {p['b']}: {p['shape_iod']:.3f} IOD (~{p['shape_mm']} mm), shared: {', '.join(p['shared']) or 'nothing'}{'  REVIEW' if p['review'] else ''}")
+        print(f"  {p['a']} vs {p['b']}: {p['shape_iod']:.3f} IOD (~{p['shape_mm']} mm), shared: {', '.join(p['shared']) or 'nothing'}{'  NEAR-DUPLICATE' if p['near_duplicate'] else '  look-alike' if p['review'] else ''}")
     return 0
 
 

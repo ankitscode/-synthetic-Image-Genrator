@@ -185,6 +185,22 @@ BEARD_GEOMETRY = {  # all x IOD; z up, face looks toward -Y
     "goatee_below_chin": 0.1,
 }
 
+# Identity distinctness (shared/similarity.py, blender/select_identities.py, tools/validate_job.py).
+# Near-duplicate = practically the same face (label noise for training): REJECTED by the selector.
+NEAR_DUPLICATE_SHAPE_IOD = 0.025  # face-shape RMS distance below this (~1.6 mm) ...
+NEAR_DUPLICATE_TONE_DIFF = 0.08  # ... with the same sex and skin tones closer than this
+# Look-alike = resembles another identity (shared hair etc.). Only REPORTED: hard negatives with the
+# same hair are useful for training; rejecting them would reject almost everyone at 1000+ identities.
+# Calibrated on colab_mix20_v4: pairs that a general image encoder confused had a face-shape RMS
+# distance of 0.041-0.061 IOD (closest quarter of all pairs) AND shared most appearance traits.
+LOOKALIKE_SHAPE_IOD = 0.065  # face-shape RMS distance (eye midpoint origin, IOD = 1) below this ...
+LOOKALIKE_MIN_SHARED = 3  # ... and at least this many of the 5 traits shared = too similar
+LOOKALIKE_TONE_DIFF = 0.12  # skin tones closer than this count as shared
+HAIR_COLOR_FAMILY: dict[str, str] = {
+    "black": "dark", "dark_brown": "dark", "brown": "brown", "light_brown": "brown", "auburn": "red",
+    "blonde": "blonde", "grey": "grey", "white": "grey",
+}
+
 # Skin tone bands (for audits / tests): tone < light_max = light, < medium_max = medium, else dark
 SKIN_TONE_BANDS = {"light_max": 0.30, "medium_max": 0.65}
 SKIN_LIGHT_RACES: tuple[str, ...] = ("asian", "caucasian")
