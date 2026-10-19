@@ -3,6 +3,9 @@
     $BLENDER_PATH --background --python blender/render_batch.py -- --job output/<job_id>/job.json [--resume]
 
 --resume skips identities whose params.json already says "done" (e.g. after a Colab disconnect).
+--max-identities N renders at most N new identities, then exits (a fresh Blender process per group
+keeps memory flat on long Colab runs). --stop-at T (unix time) starts no identity that would not
+finish before T (estimate = slowest identity so far). Both leave progress.json "status": "partial".
 
 job.json (written by the app; output goes next to it):
     {
@@ -11,6 +14,8 @@ job.json (written by the app; output goes next to it):
       "params": {...},                                # optional overrides of DEFAULT_PARAMS
       "identity_indices": [3, 7]                      # optional: only these identities (default 1..N)
     }
+
+Writes landmarks.json per identity too (5 projected points per image, blender/landmarks.py).
 
 stdout: one JSON line per finished identity ({"event": "identity_done", "index": i}).
 Everything else goes to stderr via logging.
@@ -32,6 +37,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "blender"))
 sys.path.insert(0, str(PROJECT_ROOT))
 
 import human  # noqa: E402
+import landmarks  # noqa: E402
 import scene  # noqa: E402
 from shared import constants as C  # noqa: E402
 from shared import sampling  # noqa: E402
@@ -56,6 +62,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="render_batch.py")
     parser.add_argument("--job", required=True, type=Path)
     parser.add_argument("--resume", action="store_true", help="skip identities already rendered")
+    parser.add_argument("--max-identities", type=int, help="render at most this many new identities, then exit")
+    parser.add_argument("--stop-at", type=float, help="unix time: start no identity that would end after it")
     return parser.parse_args(argv)
 
 
@@ -94,6 +102,9 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
     see_through = {o.name for o in bpy.data.objects
                    if o.name.endswith((f".{identity['eyebrows']}", f".{identity['eyelashes']}"))}
     camera, light = scene.create_rig()
+    vertices = landmarks.load_vertices()
+    points = landmarks.world_points(basemesh, eyes, vertices)
+    projected = {}
     record["build_seconds"] = time.perf_counter() - t0
 
     # Auto-exposure reference: this person's face brightness under neutral light at exposure 0.
@@ -117,6 +128,7 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
             log.warning("%s image %d: eyes hidden after %d attempts, keeping the last one",
                         record["identity_id"], image_index, C.MAX_IMAGE_ATTEMPTS)
         image["rejected_attempts"] = rejected
+        projected[C.IMAGE_STEM_FMT.format(image_index)] = landmarks.project(camera, points, basemesh, eyes, see_through)
         scene.place_key_light(light, eye_mid, image["light"])
         image["environment_derived"] = scene.set_environment(image["environment"], image["background"], light,
                                                              camera, eye_mid, hdris)
@@ -137,6 +149,8 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
                  image["render_seconds"], 100 * image["qa"]["face_white_fraction"])
 
     Path(preview).unlink(missing_ok=True)
+    write_json(out_dir / "landmarks.json", {"order": landmarks.LANDMARK_NAMES, "vertices": vertices,
+                                            "resolution": C.RENDER_RESOLUTION, "images": projected})
     record["status"] = "done"
     return record
 
@@ -176,11 +190,20 @@ def main() -> None:
     log.info("Job %s: %d identities x %d images, %d samples on %s",
              job.get("job_id"), total, job["images_per_identity"], samples, device)
 
+    rendered, slowest = 0, 0.0
     for done, index in enumerate(indices, start=1):
         out_dir = job_dir / C.IDENTITY_DIR_FMT.format(index)
         if args.resume and already_done(out_dir):
             emit({"event": "identity_done", "index": index, "status": "done", "skipped": True})
             continue
+        if args.max_identities is not None and rendered >= args.max_identities:
+            write_json(progress_file, {"done": done - 1, "total": total, "status": "partial"})
+            emit({"event": "stopped", "reason": "max_identities", "next_index": index})
+            return
+        if args.stop_at is not None and time.time() + slowest > args.stop_at:
+            write_json(progress_file, {"done": done - 1, "total": total, "status": "partial"})
+            emit({"event": "stopped", "reason": "time_limit", "next_index": index})
+            return
         out_dir.mkdir(parents=True, exist_ok=True)
         t0 = time.perf_counter()
         try:
@@ -191,6 +214,8 @@ def main() -> None:
             record = {"identity_id": C.IDENTITY_DIR_FMT.format(index), "status": "failed",
                       "error": traceback.format_exc()}
         record["total_seconds"] = time.perf_counter() - t0
+        rendered += 1
+        slowest = max(slowest, record["total_seconds"])
         record["render"] = {"samples": samples, "device": device, "resolution": C.RENDER_RESOLUTION}
         write_json(out_dir / "params.json", record)
         write_json(progress_file, {"done": done, "total": total, "status": "running"})

@@ -1,9 +1,10 @@
 """Data-cleanliness check for a rendered 3D job (approach A). No model, no training.
 
-    venv/bin/python tools/validate_job.py output/<job_id>
+    venv/bin/python tools/validate_job.py output/<job_id> [--shapes output/selections/<job_id>.shapes.npz]
 
-Needs: params.json (render), landmarks.json (blender/compute_landmarks.py), alignment.json +
-aligned/ (app/postprocess.py), face_shape.json (blender/face_shape_distance.py).
+Needs: params.json + landmarks.json (render; older jobs: blender/compute_landmarks.py), alignment.json +
+aligned/ (app/postprocess.py), and face shapes: face_shape.json (blender/face_shape_distance.py) or,
+with --shapes, the cache saved by blender/select_identities.py (no Blender needed).
 
 1. Landmarks: all 5 visible, inside the frame, aligned residual small.
 2. Same person in every image: identity values and the applied skin are identical across images.
@@ -13,6 +14,7 @@ aligned/ (app/postprocess.py), face_shape.json (blender/face_shape_distance.py).
 Writes <job>/validation.json and <job>/validation_pairs.png (closest pairs side by side).
 """
 
+import argparse
 import json
 import sys
 from itertools import combinations
@@ -26,6 +28,8 @@ from shared import similarity  # noqa: E402
 RESIDUAL_FLAG_PX = 6.0  # aligned residual above this (template pixels, 112 crop) = review
 SKIN_MATCH_TOL = 1e-4  # applied skin values may differ only by float noise between images
 PAIRS_SHOWN = 6
+LOOKALIKES_SHOWN = 24  # sheet rows for look-alikes (all are listed in validation.json)
+TYPICAL_IOD_MM = 63.0  # same as blender/face_shape_distance.py
 TILE = 160
 
 
@@ -41,10 +45,31 @@ def frontal_aligned(identity_dir: Path, record: dict) -> Image.Image:
     return Image.open(identity_dir / "aligned" / f"{Path(best['file']).stem}.jpg").convert("RGB").resize((TILE, TILE))
 
 
+def shapes_from_selection(path: Path, names: list[str]) -> dict:
+    """face_shape.json-like dict from a select_identities.py cache (<selection>.shapes.npz)."""
+    import numpy as np
+    cache = np.load(path)
+    by_name = {f"id_{int(i):05d}": k for k, i in enumerate(cache["indices"])}
+    missing = [n for n in names if n not in by_name]
+    if missing:
+        raise SystemExit(f"{path}: no face shape for {missing[:5]}")
+    shapes = cache["shapes"][[by_name[n] for n in names]].astype(np.float64)
+    matrix = np.zeros((len(names), len(names)))
+    for i in range(len(names)):
+        matrix[i] = np.sqrt(((shapes - shapes[i]) ** 2).sum(axis=2).mean(axis=1))
+    return {"identities": names, "typical_iod_mm": TYPICAL_IOD_MM, "rms_distance": matrix.tolist()}
+
+
 def main() -> int:
-    job = Path(sys.argv[1])
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("job", type=Path)
+    parser.add_argument("--shapes", type=Path, help="select_identities.py shape cache instead of face_shape.json")
+    args = parser.parse_args()
+    job = args.job
     records = {d.name: json.loads((d / "params.json").read_text()) for d in sorted(job.glob("id_*"))}
-    shape = json.loads((job / "face_shape.json").read_text())
+    records = {n: r for n, r in records.items() if r.get("status") == "done"}
+    shape = (shapes_from_selection(args.shapes, list(records)) if args.shapes
+             else json.loads((job / "face_shape.json").read_text()))
     report: dict = {"job": job.name, "identities": len(records), "landmarks": {}, "consistency": {}, "pairs": {}}
 
     # 1. landmarks
@@ -98,10 +123,10 @@ def main() -> int:
 
     # sheet: closest pairs, frontal aligned crops side by side
     font = ImageFont.load_default()
-    rows = pairs[:PAIRS_SHOWN] + [p for p in pairs[PAIRS_SHOWN:] if p["review"]]
+    rows = pairs[:PAIRS_SHOWN] + [p for p in pairs[PAIRS_SHOWN:] if p["review"]][:LOOKALIKES_SHOWN]
     sheet = Image.new("RGB", (2 * TILE + 260, 22 + len(rows) * (TILE + 6)), (24, 24, 24))
     draw = ImageDraw.Draw(sheet)
-    draw.text((6, 5), f"{job.name}: the {PAIRS_SHOWN} most similar face shapes + look-alikes", fill=(230, 230, 230), font=font)
+    draw.text((6, 5), f"{job.name}: the {PAIRS_SHOWN} most similar face shapes + look-alikes (max {LOOKALIKES_SHOWN})", fill=(230, 230, 230), font=font)
     for r, p in enumerate(rows):
         y = 22 + r * (TILE + 6)
         sheet.paste(frontal_aligned(job / p["a"], records[p["a"]]), (6, y))

@@ -70,6 +70,27 @@ def face_shape(identity: dict, categories: dict, region: np.ndarray | None) -> t
     return (co[region] - mid) / iod, region
 
 
+class ShapePool:
+    """Face shapes in one growing float32 array (no re-stacking per candidate: flat memory)."""
+
+    def __init__(self, shapes: list[np.ndarray]) -> None:
+        self.n = len(shapes)
+        self.data = np.stack(shapes) if shapes else None
+
+    def add(self, shape: np.ndarray) -> None:
+        if self.data is None:
+            self.data = np.empty((64, *shape.shape), np.float32)
+        elif self.n == len(self.data):
+            self.data = np.concatenate([self.data, np.empty_like(self.data)])
+        self.data[self.n] = shape
+        self.n += 1
+
+    def distances(self, shape: np.ndarray, block: int = 512) -> np.ndarray:
+        """RMS distance from shape to every pooled shape, in blocks (small temporaries)."""
+        return np.concatenate([np.sqrt(((self.data[i:min(i + block, self.n)] - shape) ** 2).sum(axis=2).mean(axis=1))
+                               for i in range(0, self.n, block)])
+
+
 def shapes_file(selection: Path) -> Path:
     return selection.with_suffix(".shapes.npz")
 
@@ -117,12 +138,14 @@ def main() -> None:
     human.load_mpfb()
     earlier = load_earlier(args.against, params, categories)
     region = earlier["region"]
-    pool_shapes, pool_idents, pool_keys = list(earlier["shapes"]), list(earlier["idents"]), list(earlier["keys"])
+    pool, pool_idents, pool_keys = ShapePool(earlier["shapes"]), list(earlier["idents"]), list(earlier["keys"])
+    n_earlier = pool.n
+    del earlier["shapes"]
     accepted, rejected, skipped_group = [], [], 0
     nearest, lookalike_pairs, last_candidate = [], 0, 0
     first = args.start or earlier["last_candidate"].get(args.seed, 0) + 1
-    if pool_shapes:
-        print(f"AGAINST {len(pool_shapes)} identities from {len(args.against)} earlier selection(s); "
+    if n_earlier:
+        print(f"AGAINST {n_earlier} identities from {len(args.against)} earlier selection(s); "
               f"starting at candidate {first}", flush=True)
     t0 = time.perf_counter()
     for index in range(first, MAX_CANDIDATES + 1):
@@ -138,8 +161,8 @@ def main() -> None:
         last_candidate = index
         shape, region = face_shape(identity, categories, region)
         shape = shape.astype(np.float32)
-        if pool_shapes:
-            dist = np.sqrt(((np.stack(pool_shapes) - shape) ** 2).sum(axis=2).mean(axis=1))
+        if pool.n:
+            dist = pool.distances(shape)
             dupes = [(pool_keys[k], float(dist[k])) for k in np.argsort(dist)[:20]
                      if similarity.near_duplicate(float(dist[k]), identity, pool_idents[k])]
             if dupes:
@@ -153,19 +176,19 @@ def main() -> None:
                                    for k, d in enumerate(dist))
         accepted.append(index)
         pool_idents.append(identity)
-        pool_shapes.append(shape)
+        pool.add(shape)
         pool_keys.append((args.seed, index))
         if need is not None:
             need[group] -= 1
         if len(accepted) % 25 == 0:
             print(f"ACCEPTED {len(accepted)}/{target}  candidates {index}  {time.perf_counter() - t0:.0f}s", flush=True)
 
-    pairs = len(pool_shapes) * (len(pool_shapes) - 1) // 2 - len(earlier["shapes"]) * (len(earlier["shapes"]) - 1) // 2
+    pairs = pool.n * (pool.n - 1) // 2 - n_earlier * (n_earlier - 1) // 2
     result = {
         "seed": args.seed, "sampler_version": C.SAMPLER_VERSION, "mix": args.mix, "count": len(accepted),
         "accepted": accepted, "rejected_near_duplicates": rejected, "skipped_for_mix": skipped_group,
         "first_candidate": first, "last_candidate": last_candidate,
-        "against": [str(p) for p in args.against], "compared_with_earlier": len(earlier["shapes"]),
+        "against": [str(p) for p in args.against], "compared_with_earlier": n_earlier,
         "rules": {"near_duplicate_shape_iod": C.NEAR_DUPLICATE_SHAPE_IOD, "near_duplicate_tone_diff": C.NEAR_DUPLICATE_TONE_DIFF,
                   "lookalike_shape_iod": C.LOOKALIKE_SHAPE_IOD, "lookalike_min_shared": C.LOOKALIKE_MIN_SHARED},
         "nearest_accepted_shape_iod": {"min": min(nearest, default=None), "median": float(np.median(nearest)) if nearest else None},
@@ -173,8 +196,7 @@ def main() -> None:
     }
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
-    new = slice(len(earlier["shapes"]), None)
-    np.savez_compressed(shapes_file(out), shapes=np.stack(pool_shapes[new]) if accepted else np.zeros((0, 0, 3), np.float32),
+    np.savez_compressed(shapes_file(out), shapes=pool.data[n_earlier:pool.n] if accepted else np.zeros((0, 0, 3), np.float32),
                         indices=np.array(accepted, dtype=np.int64), region=region)
     print(f"SELECTION {len(accepted)} accepted, {len(rejected)} near-duplicates rejected, "
           f"look-alike pairs {lookalike_pairs}/{pairs} ({100 * lookalike_pairs / max(pairs, 1):.1f}%), "
