@@ -2,7 +2,8 @@
 
     $BLENDER_PATH --background --python blender/render_batch.py -- --job output/<job_id>/job.json [--resume]
 
---resume skips identities whose params.json already says "done" (e.g. after a Colab disconnect).
+--resume skips identities whose params.json already says "done" and whose files are all there
+(e.g. after a Colab disconnect); a person with missing or empty files is rendered again.
 --max-identities N renders at most N new identities, then exits (a fresh Blender process per group
 keeps memory flat on long Colab runs). --stop-at T (unix time) starts no identity that would not
 finish before T (estimate = slowest identity so far). Both leave progress.json "status": "partial".
@@ -55,6 +56,7 @@ def hdri_files(ids: list[str]) -> dict[str, str]:
     return {i: str(known[i]) for i in ids}
 
 log = logging.getLogger("render_batch")
+PNG_END = b"IEND\xaeB`\x82"  # last 8 bytes of every complete PNG
 
 
 def parse_args() -> argparse.Namespace:
@@ -155,6 +157,21 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
     return record
 
 
+def complete_file(path: Path) -> bool:
+    """Exists, not empty and, for a PNG, ends with the IEND chunk (not cut off by an interrupted copy)."""
+    try:
+        size = path.stat().st_size
+        if size == 0:
+            return False
+        if path.suffix == ".png":
+            with path.open("rb") as f:
+                f.seek(max(0, size - len(PNG_END)))
+                return f.read() == PNG_END
+        return True
+    except OSError:
+        return False
+
+
 def already_done(out_dir: Path) -> bool:
     """True when this identity was rendered by the current sampler. An identity from an older
     sampler is an error: resuming would silently mix two code versions in one job."""
@@ -168,6 +185,11 @@ def already_done(out_dir: Path) -> bool:
     if record.get("sampler_version") != C.SAMPLER_VERSION:
         raise SystemExit(f"{params_file} was made with sampler {record.get('sampler_version')}, this code is "
                          f"sampler {C.SAMPLER_VERSION}: use a new job id instead of --resume")
+    files = [out_dir / im["file"] for im in record["images"]] + [out_dir / "landmarks.json"]
+    missing = [f.name for f in files if not complete_file(f)]
+    if missing:  # e.g. an interrupted copy from Drive: render the person again (same seed = same images)
+        log.warning("%s: %d file(s) missing or empty (%s), rendering again", out_dir.name, len(missing), missing[:3])
+        return False
     return True
 
 

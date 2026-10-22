@@ -42,7 +42,10 @@ def appearance(identity: dict) -> dict:
 
 def frontal_aligned(identity_dir: Path, record: dict) -> Image.Image:
     best = min(record["images"], key=lambda im: abs(im["camera"]["yaw"]) + abs(im["camera"]["pitch"]))
-    return Image.open(identity_dir / "aligned" / f"{Path(best['file']).stem}.jpg").convert("RGB").resize((TILE, TILE))
+    path = identity_dir / "aligned" / f"{Path(best['file']).stem}.jpg"
+    if not path.exists():  # broken person (listed in validation.json "broken")
+        return Image.new("RGB", (TILE, TILE), (90, 0, 0))
+    return Image.open(path).convert("RGB").resize((TILE, TILE))
 
 
 def shapes_from_selection(path: Path, names: list[str]) -> dict:
@@ -72,14 +75,22 @@ def main() -> int:
              else json.loads((job / "face_shape.json").read_text()))
     report: dict = {"job": job.name, "identities": len(records), "landmarks": {}, "consistency": {}, "pairs": {}}
 
-    # 1. landmarks
+    # 1. landmarks (+ images that are missing or unreadable: those people must be re-rendered)
     bad = []
+    broken: dict[str, list[str]] = {}
     residuals = []
     for name in records:
-        lm = json.loads((job / name / "landmarks.json").read_text())
-        quality = json.loads((job / name / "alignment.json").read_text())
+        lm_file, quality_file = job / name / "landmarks.json", job / name / "alignment.json"
+        if not (lm_file.exists() and quality_file.exists()):
+            broken[name] = ["landmarks.json" if not lm_file.exists() else "alignment.json"]
+            continue
+        lm = json.loads(lm_file.read_text())
+        quality = json.loads(quality_file.read_text())
         size = lm["resolution"]
         for stem, entry in lm["images"].items():
+            if "error" in quality.get(stem, {"error": "not aligned"}):
+                broken.setdefault(name, []).append(stem)
+                continue
             inside = all(0 <= x < size and 0 <= y < size for x, y in entry["points"])
             r = quality[stem]["residual_px"]
             residuals.append(r)
@@ -87,7 +98,9 @@ def main() -> int:
                 bad.append({"image": f"{name}/{stem}", "visible": entry["visible"], "inside": inside, "residual_px": r})
     residuals.sort()
     report["landmarks"] = {"images": len(residuals), "flagged": bad,
-                           "residual_px_median": residuals[len(residuals) // 2], "residual_px_max": residuals[-1]}
+                           "residual_px_median": residuals[len(residuals) // 2] if residuals else None,
+                           "residual_px_max": residuals[-1] if residuals else None}
+    report["broken"] = broken
 
     # 2. same person in every image
     inconsistent = []
@@ -140,7 +153,11 @@ def main() -> int:
     sheet.save(job / "validation_pairs.png")
 
     lm = report["landmarks"]
-    print(f"LANDMARKS  {lm['images']} images, flagged {len(lm['flagged'])}, residual median {lm['residual_px_median']:.2f} px, max {lm['residual_px_max']:.2f} px")
+    if lm["images"]:
+        print(f"LANDMARKS  {lm['images']} images, flagged {len(lm['flagged'])}, residual median {lm['residual_px_median']:.2f} px, max {lm['residual_px_max']:.2f} px")
+    if broken:
+        print(f"BROKEN     {len(broken)} people with missing/unreadable images (re-render them): "
+              + ", ".join(f"{n} ({len(v)})" for n, v in broken.items()))
     print(f"SAME PERSON  {len(records)} identities, inconsistent {len(inconsistent)}")
     pr = report["pairs"]
     print(f"DIFFERENT   {pr['count']} pairs, face shape min {pr['shape_iod_min']:.3f} / median {pr['shape_iod_median']:.3f} IOD, "

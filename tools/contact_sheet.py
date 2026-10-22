@@ -95,9 +95,15 @@ def build_sheet(job_dir: Path, images: str, tile: int, max_cols: int | None = No
         for col, stem in enumerate(stems):
             x = LABEL_WIDTH + col * (tile + GAP)
             path = by_stem.get(stem)
+            tile_img = None
             if ok and path is not None:
-                with Image.open(path) as img:
-                    sheet.paste(img.convert("RGB").resize((tile, tile), Image.Resampling.LANCZOS), (x, y))
+                try:
+                    with Image.open(path) as img:
+                        tile_img = img.convert("RGB").resize((tile, tile), Image.Resampling.LANCZOS)
+                except OSError:  # damaged file (validate_job.py lists it as broken)
+                    logging.warning("%s/%s: unreadable image", identity_dir.name, path.name)
+            if tile_img is not None:
+                sheet.paste(tile_img, (x, y))
             else:
                 draw.rectangle((x, y, x + tile - 1, y + tile - 1), fill=PLACEHOLDER)
     return sheet

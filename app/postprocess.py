@@ -56,6 +56,10 @@ def align_identity(identity_dir: Path) -> dict:
     report = {}
     for stem, lm in landmarks["images"].items():
         image = cv2.imread(str(identity_dir / "raw" / f"{stem}.png"), cv2.IMREAD_COLOR)
+        if image is None:  # missing / empty / truncated file (e.g. an interrupted copy): re-render the person
+            report[stem] = {"error": "raw image missing or unreadable"}
+            log.warning("%s/%s: raw image missing or unreadable", identity_dir.name, stem)
+            continue
         aligned, quality = align(image, np.array(lm["points"], dtype=np.float32))
         cv2.imwrite(str(out_dir / f"{stem}.jpg"), aligned, [cv2.IMWRITE_JPEG_QUALITY, ALIGNED_JPEG_QUALITY])
         report[stem] = {**quality, "all_visible": all(lm["visible"])}
@@ -67,8 +71,9 @@ def align_job(job_dir: Path) -> None:
     for identity_dir in sorted(job_dir.glob("id_*")):
         if (identity_dir / "landmarks.json").exists():
             report = align_identity(identity_dir)
-            worst = max(r["residual_px"] for r in report.values())
-            log.info("%s aligned %d images, worst residual %.2f px", identity_dir.name, len(report), worst)
+            ok = [r["residual_px"] for r in report.values() if "error" not in r]
+            log.info("%s aligned %d/%d images, worst residual %.2f px", identity_dir.name, len(ok), len(report),
+                     max(ok, default=float("nan")))
 
 
 if __name__ == "__main__":
