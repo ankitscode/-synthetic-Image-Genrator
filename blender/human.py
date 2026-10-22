@@ -155,6 +155,25 @@ def apply_skin_tone_blend(basemesh, dark_mhmat_file: str, tone: float) -> None:
     mix.inputs[0].default_value = tone
 
 
+def correct_skin_texture_saturation(basemesh, light: str, dark: str) -> None:
+    """Desaturate over-saturated base textures (C.SKIN_TEXTURE_SATURATION_FIX) before the tone blend.
+
+    DiffuseTexture -> [HSV sat x fix] -> Mix.Color1 ; dark texture -> [HSV sat x fix] -> Mix.Color2
+    """
+    tree = _skin_group_nodes(basemesh)[0].node_tree
+    mix = tree.nodes["Mix"]
+    for skin_name, socket in ((light, mix.inputs[1]), (dark, mix.inputs[2])):
+        fix = C.SKIN_TEXTURE_SATURATION_FIX.get(skin_name)
+        if fix is None or not socket.links:
+            continue
+        source = socket.links[0].from_socket
+        hsv = tree.nodes.new("ShaderNodeHueSaturation")
+        hsv.name = f"{SKIN_SHIFT_NODE}.texture_fix.{skin_name}"
+        hsv.inputs["Saturation"].default_value = fix
+        tree.links.new(source, hsv.inputs["Color"])
+        tree.links.new(hsv.outputs["Color"], socket)
+
+
 def apply_skin_shift(basemesh, hue_shift: float, saturation: float, value: float) -> None:
     """Insert a Hue/Saturation/Value node into the skin node group.
 
@@ -316,6 +335,7 @@ def build_human(identity: dict, face_categories: dict[str, dict]):
     skin = identity["skin"]
     HumanService.set_character_skin(_find_asset(AssetService.list_mhmat_assets, "skins", skin["light"]), basemesh)
     apply_skin_tone_blend(basemesh, _find_asset(AssetService.list_mhmat_assets, "skins", skin["dark"]), skin["tone"])
+    correct_skin_texture_saturation(basemesh, skin["light"], skin["dark"])
     apply_skin_shift(basemesh, skin["hue_shift"], skin["saturation"], skin["value"])
     apply_skin_shading(basemesh, skin["roughness"], skin["specular"], skin["clearcoat"])
 

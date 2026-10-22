@@ -105,7 +105,14 @@ HAIR_NONE = "none"  # bald
 # Strand texture contrast per hairstyle (1 = MakeHuman texture as is, 0 = flat colour). afro01's cap texture is
 # almost black with a faint tile pattern; normalising it to the hair colour turned that pattern into a woven-basket
 # look (worst for blonde / grey, p1_chunk02). Render only: identities do not change.
-HAIR_TEXTURE_DETAIL: dict[str, float] = {"afro01": 0.35}
+HAIR_TEXTURE_DETAIL: dict[str, float] = {"afro01": 0.15}  # cards at ~0.9 of the underlayer (0.35 still showed the grid)
+# Saturation correction per base skin texture, so every age bucket matches the young / middle-age textures of its kind
+# (median texel saturation: dark 0.57, light 0.35). MakeHuman's old textures are much more saturated (old_african_female
+# 0.75) and rendered orange (p1_chunk02 id_00244, id_00255 even under 5500 K). Render only: identities do not change.
+SKIN_TEXTURE_SATURATION_FIX: dict[str, float] = {
+    "old_african_male": 0.57 / 0.65, "old_african_female": 0.57 / 0.75,
+    "old_asian_male": 0.35 / 0.50, "old_asian_female": 0.35 / 0.45,
+}
 HAIR_STYLE_WEIGHTS: dict[str, dict[str, float]] = {
     "male": {
         HAIR_NONE: 0.20, "short01": 0.15, "short02": 0.20, "short03": 0.15, "short04": 0.15,

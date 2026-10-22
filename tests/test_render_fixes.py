@@ -24,6 +24,12 @@ def test_white_balance_pulls_warm_and_cool_light_toward_neutral() -> None:
     assert abs(wb(3000.0) - 4250.0) < 1e-6  # with strength 0.5
 
 
+def test_skin_saturation_fix_only_desaturates_known_textures() -> None:
+    known = {s for group in C.SKINS_BY_GROUP.values() for s in group}
+    assert set(C.SKIN_TEXTURE_SATURATION_FIX) <= known
+    assert all(0.5 < f < 1.0 for f in C.SKIN_TEXTURE_SATURATION_FIX.values())
+
+
 def test_afro_texture_softened_only() -> None:
     assert 0.0 < C.HAIR_TEXTURE_DETAIL["afro01"] < 1.0
     assert set(C.HAIR_TEXTURE_DETAIL) == {"afro01"}

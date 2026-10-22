@@ -1,4 +1,4 @@
-"""Before / after check of the afro01 texture softening and the key-light white balance.
+"""Before / after check of the afro01 texture softening, the old-skin saturation fix and the white balance.
 
     blender --background --python blender/debug_hair_light_fix.py -- --seed 20261013 \
         --ids 193,205,210,250,286,307,244,255,346 [--device OPTIX] [--out output/smoke/hair_light_fix]
@@ -42,8 +42,9 @@ def main() -> None:
     categories = {c["name"]: c for c in json.loads(FACE_TARGETS_FILE.read_text())["categories"]}
     regions = {n: c["region"] for n, c in categories.items()}
     params = sampling.resolve_params()
-    after = {"detail": dict(C.HAIR_TEXTURE_DETAIL), "wb": C.WHITE_BALANCE_STRENGTH}
-    variants = {"before": {"detail": {}, "wb": 0.0}, "after": after}
+    after = {"detail": dict(C.HAIR_TEXTURE_DETAIL), "wb": C.WHITE_BALANCE_STRENGTH,
+             "skin": dict(C.SKIN_TEXTURE_SATURATION_FIX)}
+    variants = {"before": {"detail": {}, "wb": 0.0, "skin": {}}, "after": after}
     human.load_mpfb()
 
     tiles = []
@@ -53,6 +54,8 @@ def main() -> None:
             C.HAIR_TEXTURE_DETAIL.clear()
             C.HAIR_TEXTURE_DETAIL.update(variant["detail"])
             C.WHITE_BALANCE_STRENGTH = variant["wb"]
+            C.SKIN_TEXTURE_SATURATION_FIX.clear()
+            C.SKIN_TEXTURE_SATURATION_FIX.update(variant["skin"])
             human.clear_scene()
             basemesh, eyes = human.build_human(identity, categories)
             eye_mid, iod = human.eye_geometry(eyes)
@@ -66,7 +69,7 @@ def main() -> None:
                 beard = identity.get("beard", {}).get("style", "none")
                 tiles.append({"file": file, "label": f"id_{index:05d} {name} {int(kelvin)}K (rendered {rendered:.0f}K)\n"
                                                      f"{identity['hair']['style']} {identity['hair']['color_name']}, "
-                                                     f"tone {identity['skin']['tone']:.2f}, beard {beard}"})
+                                                     f"tone {identity['skin']['tone']:.2f} {identity['skin']['dark']}, beard {beard}"})
             print(f"FIX_PREVIEW id_{index:05d} {name}", flush=True)
     audit_common.write_manifest(args.out, "Hair texture + white balance: before | after, 3000 K and 5500 K", 4, tiles)
 
