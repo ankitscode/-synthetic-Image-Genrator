@@ -1,8 +1,9 @@
 """Identity distinctness rules. Standard library only. Face shape is measured in Blender
 (blender/select_identities.py, blender/face_shape_distance.py); these are the rules.
 
-Near-duplicate (rejected): face shape < NEAR_DUPLICATE_SHAPE_IOD, same sex, skin tone within
-NEAR_DUPLICATE_TONE_DIFF: practically the same face, which would be label noise.
+Near-duplicate (rejected): same sex and face shape < NEAR_DUPLICATE_SHAPE_IOD with skin tone within
+NEAR_DUPLICATE_TONE_DIFF, or face shape < NEAR_DUPLICATE_ANY_TONE_IOD whatever the tone: practically the
+same face, which would be label noise (or teach the model that skin tone alone separates people).
 Look-alike (reported only): face shape < LOOKALIKE_SHAPE_IOD and >= LOOKALIKE_MIN_SHARED shared traits
 (sex, skin tone, hairstyle, hair colour family, and beard style between two men). Face shape is measured in Blender
 (blender/select_identities.py, blender/face_shape_distance.py); this module is the trait part.
@@ -32,5 +33,9 @@ def too_similar(shape_iod: float, shared: list[str]) -> bool:
 
 
 def near_duplicate(shape_iod: float, a: dict, b: dict) -> bool:
-    return (shape_iod < C.NEAR_DUPLICATE_SHAPE_IOD and a["sex"] == b["sex"]
+    if a["sex"] != b["sex"]:
+        return False
+    if shape_iod < C.NEAR_DUPLICATE_ANY_TONE_IOD:
+        return True
+    return (shape_iod < C.NEAR_DUPLICATE_SHAPE_IOD
             and abs(a["skin"]["tone"] - b["skin"]["tone"]) < C.NEAR_DUPLICATE_TONE_DIFF)

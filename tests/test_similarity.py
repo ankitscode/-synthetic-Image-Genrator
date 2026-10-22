@@ -27,7 +27,7 @@ def test_hair_colour_families() -> None:
 
 def test_near_duplicate_needs_close_shape_same_sex_and_tone() -> None:
     a, b = person("male", 0.50), person("male", 0.55)
-    close = C.NEAR_DUPLICATE_SHAPE_IOD / 2
+    close = (C.NEAR_DUPLICATE_ANY_TONE_IOD + C.NEAR_DUPLICATE_SHAPE_IOD) / 2  # tone decides in this range
     assert similarity.near_duplicate(close, a, b)
     assert not similarity.near_duplicate(C.NEAR_DUPLICATE_SHAPE_IOD * 1.5, a, b)
     assert not similarity.near_duplicate(close, a, person("female", 0.55))
@@ -47,3 +47,10 @@ def test_hair_colour_family_covers_every_colour() -> None:
 def test_works_on_sampled_identities() -> None:
     a, b = (sampling.sample_identity(7, i, PARAMS, CATEGORIES) for i in (1, 2))
     assert isinstance(similarity.shared_traits(a, b), list)
+
+
+def test_near_duplicate_very_close_shape_ignores_skin_tone() -> None:
+    a, b = person("male", 0.20), person("male", 0.80)
+    assert similarity.near_duplicate(C.NEAR_DUPLICATE_ANY_TONE_IOD * 0.8, a, b)
+    assert not similarity.near_duplicate(C.NEAR_DUPLICATE_ANY_TONE_IOD * 1.1, a, b)
+    assert not similarity.near_duplicate(C.NEAR_DUPLICATE_ANY_TONE_IOD * 0.8, a, person("female", 0.20))

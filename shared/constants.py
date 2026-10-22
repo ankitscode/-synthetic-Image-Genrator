@@ -189,6 +189,8 @@ BEARD_GEOMETRY = {  # all x IOD; z up, face looks toward -Y
 # Near-duplicate = practically the same face (label noise for training): REJECTED by the selector.
 NEAR_DUPLICATE_SHAPE_IOD = 0.025  # face-shape RMS distance below this (~1.6 mm) ...
 NEAR_DUPLICATE_TONE_DIFF = 0.08  # ... with the same sex and skin tones closer than this
+NEAR_DUPLICATE_ANY_TONE_IOD = 0.02  # same sex and face shape below this (~1.3 mm): duplicate whatever the
+                                   # skin tone (the same bone structure recoloured; p1_chunk02 had one at 0.017)
 # Look-alike = resembles another identity (shared hair etc.). Only REPORTED: hard negatives with the
 # same hair are useful for training; rejecting them would reject almost everyone at 1000+ identities.
 # Calibrated on colab_mix20_v4: pairs that a general image encoder confused had a face-shape RMS
