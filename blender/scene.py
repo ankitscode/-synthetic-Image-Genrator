@@ -125,12 +125,19 @@ def place_camera(camera: bpy.types.Object, eye_mid: Vector, iod: float, cam: dic
     }
 
 
-def place_key_light(light: bpy.types.Object, eye_mid: Vector, params: dict) -> None:
+def white_balanced_kelvin(kelvin: float) -> float:
+    """Phone-like auto white balance: pull the colour temperature toward neutral (C.WHITE_BALANCE_*)."""
+    return C.WHITE_BALANCE_NEUTRAL_K + (kelvin - C.WHITE_BALANCE_NEUTRAL_K) * (1.0 - C.WHITE_BALANCE_STRENGTH)
+
+
+def place_key_light(light: bpy.types.Object, eye_mid: Vector, params: dict) -> float:
+    """Returns the rendered colour temperature (after white balance)."""
     light.location = eye_mid + _orbit_offset(params["azimuth"], params["elevation"], C.KEY_LIGHT_DISTANCE_M)
     _look_at(light, eye_mid)
     light.data.energy = C.KEY_LIGHT_BASE_POWER_W * params["intensity"]
-    light.data.temperature = params["kelvin"]
+    light.data.temperature = white_balanced_kelvin(params["kelvin"])
     light.data.size = params["size_m"]
+    return light.data.temperature
 
 
 def set_background(params: dict) -> None:

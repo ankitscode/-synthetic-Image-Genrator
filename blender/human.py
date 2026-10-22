@@ -205,11 +205,12 @@ def _mean_texture_luminance(image) -> float:
     return float(np.mean(rgb @ np.array(LUMA, dtype=np.float32)))
 
 
-def apply_strand_color(obj, rgb: list[float]) -> None:
+def apply_strand_color(obj, rgb: list[float], detail: float = 1.0) -> None:
     """Recolour a MAKESKIN hair/eyebrow material while keeping its strand detail.
 
-    diffuseTexture -> RGBtoBW (luminance) -> x (1 / mean luminance) -> scale target RGB
-    -> diffuseIntensity.Color2 (which feeds Principled Base Color). Alpha is untouched.
+    diffuseTexture -> RGBtoBW (luminance) -> x (1 / mean luminance) -> [detail: 1 + detail x (v - 1)]
+    -> scale target RGB -> diffuseIntensity.Color2 (which feeds Principled Base Color). Alpha is untouched.
+    detail < 1 flattens the texture contrast toward the plain colour (C.HAIR_TEXTURE_DETAIL).
     """
     mat = obj.data.materials[0]
     tree = mat.node_tree
@@ -229,7 +230,17 @@ def apply_strand_color(obj, rgb: list[float]) -> None:
 
     tree.links.new(tex.outputs["Color"], bw.inputs["Color"])
     tree.links.new(bw.outputs["Val"], norm.inputs[0])
-    tree.links.new(norm.outputs["Value"], scale.inputs["Scale"])
+    value = norm.outputs["Value"]
+    if detail < 1.0:
+        soften = tree.nodes.new("ShaderNodeMath")
+        soften.operation = "MULTIPLY_ADD"  # v x detail + (1 - detail)
+        soften.use_clamp = False
+        soften.inputs[1].default_value = detail
+        soften.inputs[2].default_value = 1.0 - detail
+        soften.name = f"{HAIR_COLOR_PREFIX}.detail"
+        tree.links.new(value, soften.inputs[0])
+        value = soften.outputs["Value"]
+    tree.links.new(value, scale.inputs["Scale"])
     tree.links.new(scale.outputs["Vector"], mix.inputs["Color2"])
 
 
@@ -343,7 +354,7 @@ def add_hair(basemesh, style: str, rgb: list[float]) -> list:
     HumanService = service("humanservice", "HumanService")
     hair_file = _find_asset(AssetService.list_mhclo_assets, "hair", style)
     hair_obj = HumanService.add_mhclo_asset(hair_file, basemesh, asset_type="Hair", set_up_rigging=False)
-    apply_strand_color(hair_obj, rgb)
+    apply_strand_color(hair_obj, rgb, C.HAIR_TEXTURE_DETAIL.get(style, 1.0))
     add_hair_underlayer(hair_obj, rgb)
     return [hair_obj, bpy.data.objects[f"{hair_obj.name}.{HAIR_UNDERLAYER_SUFFIX}"]]
 

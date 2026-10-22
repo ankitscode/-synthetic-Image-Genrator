@@ -54,3 +54,9 @@ def test_near_duplicate_very_close_shape_ignores_skin_tone() -> None:
     assert similarity.near_duplicate(C.NEAR_DUPLICATE_ANY_TONE_IOD * 0.8, a, b)
     assert not similarity.near_duplicate(C.NEAR_DUPLICATE_ANY_TONE_IOD * 1.1, a, b)
     assert not similarity.near_duplicate(C.NEAR_DUPLICATE_ANY_TONE_IOD * 0.8, a, person("female", 0.20))
+
+
+def test_bald_women_are_excluded_from_selection() -> None:
+    assert similarity.excluded(person("female", 0.5, hair=C.HAIR_NONE)) == "bald woman"
+    assert similarity.excluded(person("male", 0.5, hair=C.HAIR_NONE)) is None
+    assert similarity.excluded(person("female", 0.5, hair="long01")) is None

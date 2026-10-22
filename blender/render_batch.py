@@ -131,7 +131,7 @@ def render_identity(job: dict, params: dict, index: int, categories: dict[str, d
                         record["identity_id"], image_index, C.MAX_IMAGE_ATTEMPTS)
         image["rejected_attempts"] = rejected
         projected[C.IMAGE_STEM_FMT.format(image_index)] = landmarks.project(camera, points, basemesh, eyes, see_through)
-        scene.place_key_light(light, eye_mid, image["light"])
+        image["light_rendered_kelvin"] = scene.place_key_light(light, eye_mid, image["light"])
         image["environment_derived"] = scene.set_environment(image["environment"], image["background"], light,
                                                              camera, eye_mid, hdris)
         measured = scene.preview_face_luma(camera, basemesh, eye_mid, iod, preview)

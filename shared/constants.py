@@ -102,6 +102,10 @@ EYEBROWS: list[str] = [f"eyebrow{i:03d}" for i in range(1, 13)]
 EYELASHES: list[str] = [f"eyelashes{i:02d}" for i in range(1, 5)]
 
 HAIR_NONE = "none"  # bald
+# Strand texture contrast per hairstyle (1 = MakeHuman texture as is, 0 = flat colour). afro01's cap texture is
+# almost black with a faint tile pattern; normalising it to the hair colour turned that pattern into a woven-basket
+# look (worst for blonde / grey, p1_chunk02). Render only: identities do not change.
+HAIR_TEXTURE_DETAIL: dict[str, float] = {"afro01": 0.35}
 HAIR_STYLE_WEIGHTS: dict[str, dict[str, float]] = {
     "male": {
         HAIR_NONE: 0.20, "short01": 0.15, "short02": 0.20, "short03": 0.15, "short04": 0.15,
@@ -343,6 +347,15 @@ AE_DISPLAY_GAMMA = 2.2  # display luma -> approx. linear for the EV step (AgX is
 AE_MAX_EV = 3.0
 AE_REFERENCE_CAMERA = {"yaw": 0.0, "pitch": 0.0, "roll": 0.0, "distance_m": 0.55, "focal_mm": 50.0,
                        "face_fill": 0.58}
+# Auto white balance, like a phone: the key light's colour temperature is pulled halfway toward neutral at render
+# time (3000-6500 K sampled -> 4250-6000 K rendered). Full 3000 K turned dark skin deep orange (p1_chunk02).
+# Render only: the sampled "kelvin" in params.json is unchanged; the rendered one is "light_rendered_kelvin".
+WHITE_BALANCE_NEUTRAL_K = 5500.0
+WHITE_BALANCE_STRENGTH = 0.5
 AE_REFERENCE_LIGHT = {"azimuth": 25.0, "elevation": 20.0, "kelvin": 5500.0, "intensity": 1.0, "size_m": 0.8}
 AE_REFERENCE_BACKGROUND = {"kind": "solid", "top_rgb": [0.35, 0.35, 0.35], "bottom_rgb": [0.35, 0.35, 0.35],
                            "ambient_strength": 0.25, "ambient_tint": 0.0}
+
+# Identities never selected (blender/select_identities.py), e.g. women without hair rendered as an unnatural bald
+# head (4 of 60 women in p1_chunk02). Selection-only rule: the sampler (and so every earlier chunk) is unchanged.
+SELECTION_EXCLUDE_BALD_WOMEN = True

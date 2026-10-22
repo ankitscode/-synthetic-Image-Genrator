@@ -38,6 +38,8 @@ beards and headwear matters.
   a fresh Blender process per 25 people (`render_batch.py --max-identities`), copied to Drive after each group,
   `--stop-at` time guard; the next session resumes the chunk. Landmarks are written during rendering; the chunk
   check (align + `tools/validate_job.py --shapes <selection>.shapes.npz`) needs no Blender.
+  Look changes: preview them first with `colab/fix_preview_colab.ipynb` (`blender/debug_hair_light_fix.py`,
+  before | after on earlier people, nothing written to Drive).
   Code is cloned from the public GitHub mirror `https://github.com/ankitscode/-synthetic-Image-Genrator`
   (remote `github`; GitLab `origin` stays). Push both remotes. Open directly:
   `https://colab.research.google.com/github/ankitscode/-synthetic-Image-Genrator/blob/master/colab/synthface_3d_colab.ipynb`
@@ -205,7 +207,7 @@ Per identity (fixed for all images of that identity):
 | skin | light base (asian/caucasian) blended with african base by `tone` (~58% medium, 26% dark, 16% light) + small HSV shift + roughness/specular/clearcoat; once per identity |
 | eye colour | by dominant race (african/asian ≥95% brown/darkbrown); `brownlight` unused (renders amber) |
 | eyebrows | 12 styles dealt evenly (each once per 12 identities); colour = hair colour × 0.45–1.1 |
-| hair | excluded (cover an eye, see `blender/debug_hair_audit.py`): bob01, bob02, braid01, short03; colour: no grey/white under 45, some 45–55, mostly over 55 |
+| hair | excluded (cover an eye, see `blender/debug_hair_audit.py`): bob01, bob02, braid01, short03; colour: no grey/white under 45, some 45–55, mostly over 55; afro01 texture contrast softened to 0.35 (`HAIR_TEXTURE_DETAIL`, render only; was a woven-basket look). Bald women are sampled but never selected (`similarity.excluded`, from p1_chunk03) |
 | beard (men) | in-house particle beards (`human.add_beard`, audit `blender/debug_beard.py`): none / stubble / short / full / goatee, ~65% of men (weights by age, `BEARD_STYLE_WEIGHTS`); region computed from each face (lips, ears, chin), patchy density, skin under the beard tinted; colour = hair colour (80%); own seed stream |
 | distinct identities | `blender/select_identities.py` walks indices and rejects **near-duplicates** (same sex and face-shape RMS < 0.025 IOD ≈ 1.6 mm with skin tone within 0.08, or < 0.02 IOD ≈ 1.3 mm whatever the tone: same face under different hair/skin = label noise; 3 of 403 at seed 20261013; the tone-independent rule applies from p1_chunk03, p1_chunk02 has one such pair id_00198/id_00236 → leave id_00236 out of training). **Look-alikes** (shape < 0.065 IOD + ≥3 shared traits) are only reported (~5% of pairs; useful hard negatives). Rules in `shared/similarity.py`; check a job with `tools/validate_job.py`. `--against <earlier selections>` compares with every earlier batch (face shapes cached in `<selection>.shapes.npz`); the Colab notebook does this for all selections on Drive |
 
@@ -215,7 +217,7 @@ Per image:
 |---|---|
 | images_per_identity | 10 for tests, 50 for production |
 | yaw / pitch / roll | \|yaw\| 60% 0–15°, 30% 15–30°, 10% 30–40°; pitch ±20° (σ 10); roll ±10° (σ 5); re-sampled until both eye centres are visible |
-| light colour temp | 3000–6500 K |
+| light colour temp | 3000–6500 K sampled; rendered with phone-like auto white balance halfway to 5500 K (4250–6000 K, `WHITE_BALANCE_*`, `light_rendered_kelvin` in params; from p1_chunk03: 3000 K made dark skin orange) |
 | light intensity | 0.3–3× of a 12 W key light (QA: ≤1% pure-white face pixels) |
 | exposure | auto-exposure like a phone: per identity a reference face brightness (neutral light), per image a 64 px preview sets the EV to match it ± N(0, 0.2) EV (≤0.5); skin-tone differences between people stay |
 | environment | 60% HDRI (6 Poly Haven CC0, random rotation, key light × 0.1–0.8, depth of field f/2.8–8), 40% flat/gradient backdrop |

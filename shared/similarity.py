@@ -39,3 +39,10 @@ def near_duplicate(shape_iod: float, a: dict, b: dict) -> bool:
         return True
     return (shape_iod < C.NEAR_DUPLICATE_SHAPE_IOD
             and abs(a["skin"]["tone"] - b["skin"]["tone"]) < C.NEAR_DUPLICATE_TONE_DIFF)
+
+
+def excluded(identity: dict) -> str | None:
+    """Reason an identity is never selected (None = allowed)."""
+    if C.SELECTION_EXCLUDE_BALD_WOMEN and identity["sex"] == "female" and identity["hair"]["style"] == C.HAIR_NONE:
+        return "bald woman"
+    return None

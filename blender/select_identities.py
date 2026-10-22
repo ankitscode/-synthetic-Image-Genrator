@@ -141,7 +141,7 @@ def main() -> None:
     pool, pool_idents, pool_keys = ShapePool(earlier["shapes"]), list(earlier["idents"]), list(earlier["keys"])
     n_earlier = pool.n
     del earlier["shapes"]
-    accepted, rejected, skipped_group = [], [], 0
+    accepted, rejected, skipped_group, excluded = [], [], 0, {}
     nearest, lookalike_pairs, last_candidate = [], 0, 0
     first = args.start or earlier["last_candidate"].get(args.seed, 0) + 1
     if n_earlier:
@@ -152,6 +152,10 @@ def main() -> None:
         if len(accepted) >= target:
             break
         identity = sampling.sample_identity(args.seed, index, params, {n: c["region"] for n, c in categories.items()})
+        reason = similarity.excluded(identity)
+        if reason:
+            excluded[reason] = excluded.get(reason, 0) + 1
+            continue
         group = None
         if need is not None:
             group = next((g for g in groups_of(identity) if need.get(g, 0) > 0), None)
@@ -186,7 +190,7 @@ def main() -> None:
     pairs = pool.n * (pool.n - 1) // 2 - n_earlier * (n_earlier - 1) // 2
     result = {
         "seed": args.seed, "sampler_version": C.SAMPLER_VERSION, "mix": args.mix, "count": len(accepted),
-        "accepted": accepted, "rejected_near_duplicates": rejected, "skipped_for_mix": skipped_group,
+        "accepted": accepted, "rejected_near_duplicates": rejected, "skipped_for_mix": skipped_group, "excluded": excluded,
         "first_candidate": first, "last_candidate": last_candidate,
         "against": [str(p) for p in args.against], "compared_with_earlier": n_earlier,
         "rules": {"near_duplicate_shape_iod": C.NEAR_DUPLICATE_SHAPE_IOD, "near_duplicate_tone_diff": C.NEAR_DUPLICATE_TONE_DIFF,
@@ -198,7 +202,7 @@ def main() -> None:
     out.write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
     np.savez_compressed(shapes_file(out), shapes=pool.data[n_earlier:pool.n] if accepted else np.zeros((0, 0, 3), np.float32),
                         indices=np.array(accepted, dtype=np.int64), region=region)
-    print(f"SELECTION {len(accepted)} accepted, {len(rejected)} near-duplicates rejected, "
+    print(f"SELECTION {len(accepted)} accepted, {len(rejected)} near-duplicates rejected, excluded {excluded or 0}, "
           f"look-alike pairs {lookalike_pairs}/{pairs} ({100 * lookalike_pairs / max(pairs, 1):.1f}%), "
           f"nearest shape min {result['nearest_accepted_shape_iod']['min']} -> {out}", flush=True)
 
