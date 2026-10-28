@@ -40,6 +40,13 @@ beards and headwear matters.
   check (align + `tools/validate_job.py --shapes <selection>.shapes.npz`) needs no Blender.
   Look changes: preview them first with `colab/fix_preview_colab.ipynb` (`blender/debug_hair_light_fix.py`,
   before | after on earlier people, nothing written to Drive).
+- **Training (pilot)**: `colab/train_colab.ipynb` runs `python -m training.train` on every finished, checked chunk on
+  Drive: MobileFaceNet + ArcFace written in `training/model.py`, **trained from scratch** (no pretrained face weights),
+  approach A images only. `training/data.py` picks people (label = seed:index; leaves out bald women, near-duplicates by
+  the current rule, `training/exclude.json`) and holds out ~10% of people (stable hash) for 1:1 verification
+  (`training/metrics.py`: AUC, EER, TAR@FAR). Augmentation only at training time (`training/augment.py`). Output:
+  `synthface_output/models/<run>/` (last.pt resumable, best.pt, metrics.json, index.json, .onnx/.ts); image cache
+  `synthface_output/training_cache/`. Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
   Code is cloned from the public GitHub mirror `https://github.com/ankitscode/-synthetic-Image-Genrator`
   (remote `github`; GitLab `origin` stays). Push both remotes. Open directly:
   `https://colab.research.google.com/github/ankitscode/-synthetic-Image-Genrator/blob/master/colab/synthface_3d_colab.ipynb`

@@ -1,0 +1,6 @@
+{
+ "note": "People never used for training, by chunk (after a visual review). Bald women and near-duplicates by the current rule are excluded automatically (training/data.py); listing them here too is harmless.",
+ "exclude": {
+  "p1_chunk02": {"id_00236": "near-duplicate of id_00198 (0.017 IOD, different skin tone)"}
+ }
+}
