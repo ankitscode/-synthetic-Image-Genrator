@@ -130,6 +130,7 @@ CLICK_PAGE = """
  <div id="sf-status" style="font-weight:600;height:1.5em;overflow:hidden;white-space:nowrap;text-overflow:ellipsis"></div>
  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px">
   <button id="sf-undo">Undo (z)</button><button id="sf-skip">Skip photo (s)</button>
+  <button id="sf-whole">Whole photo (w)</button>
   <button id="sf-prev">&larr; Previous</button><button id="sf-next">Next &rarr;</button>
   <label>zoom <select id="sf-zoom"><option>1</option><option>1.5</option><option selected>2</option>
    <option>3</option><option>4</option></select></label>
@@ -140,7 +141,7 @@ CLICK_PAGE = """
 <script>
 (() => {
  const KEYS = __KEYS__, NAMES = __NAMES__, COLOURS = ["#00e5ff", "#ff2bd6", "#ffd400", "#39ff14", "#ff6a00"];
- let done = __DONE__, i = __START__, pts = [], img = new Image(), scale = 1;
+ let done = __DONE__, i = __START__, pts = [], img = new Image(), scale = 1, overview = true;
  const cv = document.getElementById("sf-canvas"), ctx = cv.getContext("2d"), zoomSel = document.getElementById("sf-zoom");
  const box = document.getElementById("sf-box");
  function centre(fx, fy) {  // keep this point of the photo (0..1) in the middle of the view
@@ -148,8 +149,10 @@ CLICK_PAGE = """
  }
  const call = async (name, args) => (await google.colab.kernel.invokeFunction(name, args, {})).data["application/json"];
  function draw() {
-  const z = parseFloat(zoomSel.value), fit = Math.min(1, 900 / img.width);
-  cv.width = img.width * fit * z; cv.height = img.height * fit * z;
+  // overview: the whole photo fits the view (click the face to zoom in); zoomed: zoom x the width-fit size
+  const f = overview ? Math.min((box.clientWidth - 4) / img.width, 700 / img.height)
+                     : Math.min(1, 900 / img.width) * parseFloat(zoomSel.value);
+  cv.width = img.width * f; cv.height = img.height * f;
   ctx.drawImage(img, 0, 0, cv.width, cv.height);
   pts.forEach((p, k) => {
    const x = p[0] / scale * cv.width / img.width, y = p[1] / scale * cv.height / img.height;
@@ -161,7 +164,9 @@ CLICK_PAGE = """
   const left = KEYS.filter(k => !(k in done)).length;
   document.getElementById("sf-status").textContent = `photo ${i + 1}/${KEYS.length} · ${KEYS[i]} · ${left} left` +
    (done[KEYS[i]] === "skip" ? " · SKIPPED" : (KEYS[i] in done ? " · saved" : ""));
-  document.getElementById("sf-ask").innerHTML = pts.length < 5
+  document.getElementById("sf-ask").innerHTML = overview && pts.length < 5
+   ? "Click on the <b>face</b> to zoom in there (w = whole photo again)."
+   : pts.length < 5
    ? `Click <b style="color:${COLOURS[pts.length]};background:#222;padding:0 4px">${pts.length + 1}. ${NAMES[pts.length]}</b> (left / right as seen in the photo)`
    : "Saved. Loading the next photo...";
  }
@@ -169,15 +174,19 @@ CLICK_PAGE = """
   i = Math.max(0, Math.min(KEYS.length - 1, k));
   const r = await call("synthface.photo", [KEYS[i]]);
   scale = r.scale; pts = Array.isArray(done[KEYS[i]]) ? done[KEYS[i]].slice() : [];
-  img = new Image(); img.onload = () => { draw(); centre(0.5, 0.45); }; img.src = r.data;
+  overview = true;
+  img = new Image(); img.onload = draw; img.src = r.data;
  }
  function nextOpen() {
   for (let k = 1; k <= KEYS.length; k++) { const j = (i + k) % KEYS.length; if (!(KEYS[j] in done)) return show(j); }
   document.getElementById("sf-ask").innerHTML = "<b>All photos are done.</b> Run the next cell.";
  }
  cv.addEventListener("click", async e => {
-  if (pts.length >= 5) pts = [];
   const b = cv.getBoundingClientRect();
+  if (overview) {               // first click: zoom in around the face
+   overview = false; draw(); centre((e.clientX - b.left) / b.width, (e.clientY - b.top) / b.height); return;
+  }
+  if (pts.length >= 5) pts = [];
   pts.push([(e.clientX - b.left) * img.width / cv.width * scale, (e.clientY - b.top) * img.height / cv.height * scale]);
   draw();
   if (pts.length === 5) { await call("synthface.save", [KEYS[i], pts]); done[KEYS[i]] = pts.slice(); setTimeout(nextOpen, 400); }
@@ -188,11 +197,16 @@ CLICK_PAGE = """
  document.getElementById("sf-skip").onclick = skip;
  document.getElementById("sf-prev").onclick = () => show(i - 1);
  document.getElementById("sf-next").onclick = () => show(i + 1);
+ const whole = () => { overview = true; draw(); };
+ document.getElementById("sf-whole").onclick = whole;
  zoomSel.onchange = () => {
+  if (overview) return;
   const fx = (box.scrollLeft + box.clientWidth / 2) / cv.width, fy = (box.scrollTop + box.clientHeight / 2) / cv.height;
   draw(); centre(fx, fy);
  };
- document.addEventListener("keydown", e => { if (e.key === "z") undo(); if (e.key === "s") skip(); });
+ document.addEventListener("keydown", e => {
+  if (e.key === "z") undo(); if (e.key === "s") skip(); if (e.key === "w") whole();
+ });
  show(i);
 })();
 </script>
