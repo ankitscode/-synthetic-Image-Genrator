@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 from PIL import Image
 
 from shared import constants as C
@@ -49,7 +50,7 @@ def test_load_aligned_skips_missing_and_too_few(tmp_path: Path) -> None:
     real_photos.save_landmark(real_dir, "emp_b/IMG_000.jpg", (POINTS).tolist())
     real_photos.save_landmark(real_dir, "emp_b/IMG_001.jpg", real_photos.SKIP)       # emp_b keeps only 1 photo
     real_photos.save_landmark(real_dir, "emp_c/IMG_000.jpg", POINTS.tolist())         # emp_c/IMG_001 not clicked
-    out = real_photos.load_aligned(real_dir)
+    out = real_photos.load_aligned(real_dir, detect=False)
     assert out["names"] == ["real/emp_a"] and out["labels"].tolist() == [0, 0, 0]
     assert out["images"].shape == (3, 112, 112, 3) and max(out["residual_px"]) < 3.0
     assert out["skipped"] == ["emp_b/IMG_001.jpg"] and out["missing"] == ["emp_c/IMG_001.jpg"]
@@ -166,3 +167,44 @@ def test_local_click_server_serves_and_saves(tmp_path: Path) -> None:
         captured["server"].shutdown()
     finally:
         ThreadingHTTPServer.serve_forever = original
+
+
+def test_detector_points_are_ordered_and_scaled(monkeypatch) -> None:
+    class FakeYuNet:      # YuNet row: box x, y, w, h, then right eye, left eye, nose, right / left mouth corner, score
+        def setInputSize(self, size) -> None:
+            self.size = size
+
+        def detect(self, image):
+            small = np.array([10, 10, 20, 20, 60, 50, 40, 50, 50, 60, 58, 70, 42, 70, 0.7], np.float32)
+            big = np.array([100, 100, 300, 300, 300, 200, 200, 200, 250, 250, 290, 300, 210, 300, 0.9], np.float32)
+            return 2, np.stack([small, big])
+
+    monkeypatch.setattr(real_photos, "_detector", FakeYuNet())
+    image = np.zeros((2560, 1920, 3), np.uint8)                      # shrunk by 0.5 to 1280 for detection
+    pts, score = real_photos.detect_points(image)
+    assert score == pytest.approx(0.9)                               # the largest face
+    assert pts.tolist() == [[400, 400], [600, 400], [500, 500], [420, 600], [580, 600]]   # viewer's left first
+
+
+def test_photos_without_clicks_use_the_detector(tmp_path: Path, monkeypatch) -> None:
+    real_dir = make_real_dir(tmp_path / "real", {"emp_a": 2, "emp_b": 2})
+    real_photos.save_landmark(real_dir, "emp_a/IMG_000.jpg", POINTS.tolist())        # clicked points win
+    found = {"emp_a/IMG_001.jpg": POINTS + 40, "emp_b/IMG_000.jpg": POINTS, "emp_b/IMG_001.jpg": None}
+    calls = []
+
+    def fake_detect(photo):
+        key = list(found)[len(calls)]
+        calls.append(key)
+        return None if found[key] is None else (found[key], 0.9)
+
+    monkeypatch.setattr(real_photos, "detect_points", fake_detect)
+    out = real_photos.load_aligned(real_dir)
+    assert calls == list(found)                                      # the clicked photo was not detected
+    assert out["source"] == {"clicked": 1, "detected": 2} and out["no_face"] == ["emp_b/IMG_001.jpg"]
+    assert out["names"] == ["real/emp_a"] and out["too_few"] == ["emp_b"]
+
+
+def test_yunet_finds_no_face_on_a_blank_photo() -> None:
+    pytest.importorskip("cv2")
+    assert real_photos.YUNET_MODEL.exists()
+    assert real_photos.detect_points(np.full((800, 600, 3), 128, np.uint8)) is None

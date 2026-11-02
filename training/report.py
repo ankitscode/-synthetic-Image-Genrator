@@ -369,11 +369,13 @@ def render_real(r: dict, info: dict, thumb: Thumbs, names: list[str], files: lis
                 n_synth: int, threshold: float) -> str:
     c, al, mx = r["one_to_one"]["counts"], r["alone"], r["mixed"]
     n_same, n_diff = c["same_matched"] + c["same_rejected"], c["different_matched"] + c["different_rejected"]
-    left_out = len(info["skipped"]) + len(info["missing"])
+    src = info.get("source", {"clicked": len(labels) - n_synth, "detected": 0})
+    how = ", ".join(f"{v} {k}" for k, v in (("detected by YuNet", src["detected"]), ("clicked by hand", src["clicked"])) if v)
+    left_out = len(info["skipped"]) + len(info["missing"]) + len(info.get("no_face", []))
     out = (f'<h2>Real people</h2><div class="note">{len(r["people"])} real people, {len(labels) - n_synth} photos '
-           f'(5 points clicked by hand, aligned like the renders; mean alignment residual '
+           f'(5 points: {how}; aligned like the renders; mean alignment residual '
            f'{np.mean(info["residual_px"]):.1f} px, max {np.max(info["residual_px"]):.1f} px). '
-           f'{left_out} photos skipped or not clicked{", people with fewer than 2 photos left out: " + html.escape(", ".join(info["too_few"])) if info["too_few"] else ""}. '
+           f'{left_out} photos skipped or without points (no face found / not clicked){", people with fewer than 2 photos left out: " + html.escape(", ".join(info["too_few"])) if info["too_few"] else ""}. '
            f'<b>Same threshold as above ({threshold:.3f}).</b> With this few people the numbers are rough: '
            f'{n_diff:,} different-person pairs cannot measure a 1-in-1,000 error rate. '
            f'<b>Contains photos of real people: do not share this report outside the team.</b></div>'
@@ -489,8 +491,9 @@ def main() -> None:
         from training import real_photos
 
         real = real_photos.load_aligned(args.real_dir)
-        print(f"REAL {len(real['names'])} people, {len(real['labels'])} photos (skipped {len(real['skipped'])}, "
-              f"not clicked {len(real['missing'])}, too few photos {real['too_few']})", flush=True)
+        print(f"REAL {len(real['names'])} people, {len(real['labels'])} photos, points {real['source']} "
+              f"(skipped {len(real['skipped'])}, no face found {real['no_face']}, not clicked {len(real['missing'])}, "
+              f"too few photos {real['too_few']})", flush=True)
         if len(real["labels"]):
             real["embeddings"] = hard_eval.embed_best(args.run, real["images"], args.device)[0]
     page, summary = build(embeddings, labels, images, names, files, [r["identity"] for r in records], image_params,

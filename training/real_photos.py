@@ -4,9 +4,13 @@ Layout (on Drive, never in git):
     <real_dir>/<person>/<photo>.jpg     one folder per person, any number of photos
     <real_dir>/landmarks.json           {"points": {"<person>/<photo>": [[x, y] x 5] | "skip"}}
 
-No face detector (CLAUDE.md hard rule 3): the 5 points are clicked by hand in Colab (clicker()), in the
-pipeline's order: left eye centre, right eye centre, nose tip, left mouth corner, right mouth corner, left/right
-as seen in the image. Coordinates are in pixels of the full-size photo after EXIF rotation.
+The 5 points, in the pipeline's order (left eye centre, right eye centre, nose tip, left mouth corner, right mouth
+corner, left/right as seen in the image; pixels of the full-size photo after EXIF rotation), come from:
+- landmarks.json when a photo was clicked by hand (clicker(), serve_local()): always wins, so a wrong detection is fixed
+  by clicking that photo;
+- otherwise the YuNet face detector (OpenCV FaceDetectorYN, MIT, assets/detectors/, recorded in assets/LICENSES.csv).
+  Evaluation only: an exception to CLAUDE.md hard rule 3 approved by the user, because the phone app has to find
+  faces too. Training data never uses a detector (its landmarks come from the 3D model).
 
 Alignment: the photo is first shrunk with an anti-aliased resize so the eyes are as far apart as in a 256 px render,
 then the same similarity transform to the ArcFace template as the renders (app/postprocess.align).
@@ -31,6 +35,9 @@ SKIP = "skip"
 TEMPLATE_IOD = float(np.hypot(C.ARCFACE_112[1][0] - C.ARCFACE_112[0][0], C.ARCFACE_112[1][1] - C.ARCFACE_112[0][1]))
 PRESCALE_IOD = 2 * TEMPLATE_IOD     # eye distance before alignment, about that of a 256 px render
 CLICK_DISPLAY_MAX = 1400            # long side of the photo sent to the click page
+YUNET_MODEL = Path(__file__).resolve().parent.parent / "assets" / "detectors" / "face_detection_yunet_2026may.onnx"
+DETECT_MAX_SIDE = 1280              # photos are shrunk to this long side for detection
+DETECT_MIN_SCORE = 0.6
 POINT_NAMES = ["LEFT eye centre", "RIGHT eye centre", "nose tip", "LEFT mouth corner", "RIGHT mouth corner"]
 
 
@@ -78,27 +85,62 @@ def align_photo(image: np.ndarray, points: np.ndarray) -> tuple[np.ndarray, dict
     return align(np.ascontiguousarray(image), points.astype(np.float32))
 
 
-def load_aligned(real_dir: Path) -> dict:
-    """Aligned crops of every clicked photo: images (N, 112, 112, 3), labels (person index), names, files,
-    plus what was left out (skipped, not clicked yet, people with fewer than 2 usable photos)."""
+_detector = None
+
+
+def detect_points(image: np.ndarray) -> tuple[np.ndarray, float] | None:
+    """5 points (viewer's left eye, right eye, nose tip, left / right mouth corner) of the largest face, + its score."""
+    import cv2
+
+    global _detector
+    h, w = image.shape[:2]
+    s = min(1.0, DETECT_MAX_SIDE / max(h, w))
+    small = cv2.resize(image, (round(w * s), round(h * s)), interpolation=cv2.INTER_AREA)[:, :, ::-1].copy()
+    if _detector is None:
+        _detector = cv2.FaceDetectorYN.create(str(YUNET_MODEL), "", (small.shape[1], small.shape[0]),
+                                              DETECT_MIN_SCORE, 0.3, 50)
+    _detector.setInputSize((small.shape[1], small.shape[0]))
+    _, faces = _detector.detect(small)
+    if faces is None or not len(faces):
+        return None
+    face = max(faces, key=lambda f: f[2] * f[3])
+    pts = face[4:14].reshape(5, 2).astype(np.float64) / s
+    eyes = pts[:2][np.argsort(pts[:2, 0])]           # left / right as seen in the image
+    mouth = pts[3:5][np.argsort(pts[3:5, 0])]
+    return np.vstack([eyes, pts[2:3], mouth]), float(face[14])
+
+
+def load_aligned(real_dir: Path, detect: bool = True) -> dict:
+    """Aligned crops of every usable photo: images (N, 112, 112, 3), labels (person index), names, files, plus where
+    the points came from and what was left out (skipped, no face found / not clicked, people with < 2 photos)."""
     marks = load_landmarks(real_dir)["points"]
     images, labels, files, names, residuals = [], [], [], [], []
-    missing, skipped, too_few = [], [], []
+    missing, skipped, too_few, no_face = [], [], [], []
+    source = {"clicked": 0, "detected": 0}
     for person, keys in list_photos(real_dir).items():
         usable = []
         for key in keys:
             pts = marks.get(key)
-            if pts is None:
-                missing.append(key)
-            elif pts == SKIP:
+            if pts == SKIP:
                 skipped.append(key)
+            elif pts is not None:
+                usable.append((key, load_photo(real_dir / key), np.array(pts, np.float64)))
+                source["clicked"] += 1
+            elif detect:
+                photo = load_photo(real_dir / key)
+                found = detect_points(photo)
+                if found is None:
+                    no_face.append(key)
+                else:
+                    usable.append((key, photo, found[0]))
+                    source["detected"] += 1
             else:
-                usable.append((key, np.array(pts, np.float64)))
+                missing.append(key)
         if len(usable) < 2:           # one photo cannot make a same-person pair
             too_few.append(person)
             continue
-        for key, pts in usable:
-            crop, info = align_photo(load_photo(real_dir / key), pts)
+        for key, photo, pts in usable:
+            crop, info = align_photo(photo, pts)
             images.append(crop)
             labels.append(len(names))
             files.append(Path(key).stem)
@@ -106,7 +148,8 @@ def load_aligned(real_dir: Path) -> dict:
         names.append(f"real/{person}")
     return {"images": np.stack(images) if images else np.zeros((0, 112, 112, 3), np.uint8),
             "labels": np.array(labels, np.int64), "names": names, "files": files,
-            "residual_px": residuals, "missing": missing, "skipped": skipped, "too_few": too_few}
+            "residual_px": residuals, "missing": missing, "skipped": skipped, "too_few": too_few,
+            "no_face": no_face, "source": source}
 
 
 def aligned_sheet(aligned: dict, path: Path, per_row: int = 8) -> None:

@@ -52,8 +52,9 @@ beards and headwear matters.
   Evaluation report: `training/report.py` (notebook section 7) → `report.html` (self-contained: 1:1 pairs and 1:N
   gallery searches, closed + open set, MATCH / NO MATCH at one threshold, default FAR 1e-3) + `report_summary.json`.
   **Real test photos** (consented, evaluation only, never training; on Drive only, never in git): `<real_dir>/<person>/*.jpg`;
-  the 5 points are **clicked by hand** in Colab (`training/real_photos.py` clicker, notebook 7a → `landmarks.json`; no
-  detector), aligned with `app/postprocess.align` after an anti-aliased shrink; the report adds a "Real people" section
+  the 5 points come from the **YuNet detector** (OpenCV FaceDetectorYN, MIT, `assets/detectors/`; **evaluation only**:
+  user-approved exception to hard rule 3 on 2026-11-02, never for training data); points clicked by hand
+  (`training/real_photos.py` click page, notebook 7a → `landmarks.json`) override it for single photos. Aligned with `app/postprocess.align` after an anti-aliased shrink; the report adds a "Real people" section
   (`--real-dir`) at the synthetic threshold, incl. how often a real face's best match is a synthetic person.
   Local evaluation (laptop, CPU, `venv_ai/`): notebook 8 / `training/bundle.py` packs model + held-out images + shapes
   (~10 MB zip); `python -m training.real_photos data/real_test` serves the click page at 127.0.0.1:8770 (`data/real_test`
@@ -79,6 +80,8 @@ beards and headwear matters.
    before it is used. If a license is unknown, do not use the asset — ask the user.
 3. **No pretrained face detector in this pipeline.** Landmarks come from the 3D model
    (projected vertices), not from a detector.
+   Only exception (user-approved 2026-11-02): YuNet finds the 5 points on **real test photos** for evaluation
+   (`training/real_photos.py`); never on training data.
 4. **Deterministic.** Every identity and every image must be reproducible from `(job seed, identity index, image index)`.
    Never call unseeded `random`.
 5. **FastAPI never renders in-process.** Rendering always happens in a separate Blender
