@@ -234,6 +234,69 @@ def click_page(real_dir: Path) -> str:
             .replace("__DONE__", json.dumps({k: v for k, v in done.items() if k in keys})).replace("__START__", str(start)))
 
 
+LOCAL_SHIM = """<script>window.google = {colab: {kernel: {invokeFunction: async (name, args) => {
+ const r = await fetch("/call", {method: "POST", body: JSON.stringify({name, args})});
+ if (!r.ok) { alert("save failed: " + await r.text()); throw new Error(r.statusText); }
+ return {data: {"application/json": await r.json()}};
+}}}};</script>"""
+
+
+def serve_local(real_dir: Path, port: int) -> None:
+    """The click page on this computer (http://127.0.0.1:<port>), same page and files as in Colab."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Handler(BaseHTTPRequestHandler):
+        def _send(self, code: int, body: bytes, kind: str) -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            page = ("<!doctype html><meta charset='utf-8'><title>Click the 5 points</title>"
+                    "<body style='margin:16px;background:#eee'>" + LOCAL_SHIM + click_page(real_dir))
+            self._send(200, page.encode(), "text/html; charset=utf-8")
+
+        def do_POST(self) -> None:
+            try:
+                call = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                key = call["args"][0]
+                if key not in {k for ks in list_photos(real_dir).values() for k in ks}:
+                    raise ValueError(f"unknown photo {key}")
+                if call["name"] == "synthface.photo":
+                    result = photo_for_page(real_dir, key)
+                elif call["name"] == "synthface.save":
+                    points = call["args"][1]
+                    if points != SKIP and (len(points) != 5 or any(len(p) != 2 for p in points)):
+                        raise ValueError(f"{key}: expected 5 points")
+                    save_landmark(real_dir, key, points)
+                    result = {"ok": True}
+                else:
+                    raise ValueError(call["name"])
+                self._send(200, json.dumps(result).encode(), "application/json")
+            except Exception as exc:  # shown in the page as an alert
+                self._send(400, str(exc).encode(), "text/plain")
+
+        def log_message(self, *args) -> None:
+            pass
+
+    photos = list_photos(real_dir)
+    print(f"{real_dir}: {len(photos)} people, {sum(map(len, photos.values()))} photos; points saved to "
+          f"{real_dir / LANDMARKS_FILE}\nopen http://127.0.0.1:{port}  (Ctrl+C to stop)", flush=True)
+    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+
+
+def main() -> None:
+    import argparse
+
+    p = argparse.ArgumentParser(description="Click the 5 points on real test photos, on this computer.")
+    p.add_argument("real_dir", type=Path, help="<real_dir>/<person>/*.jpg")
+    p.add_argument("--port", type=int, default=8770)
+    args = p.parse_args()
+    serve_local(args.real_dir, args.port)
+
+
 def clicker(real_dir: Path):
     """Colab only: the click page, with the callbacks that serve photos and save each photo's 5 points."""
     from google.colab import output
@@ -249,3 +312,7 @@ def clicker(real_dir: Path):
 
     output.register_callback("synthface.save", save)
     return HTML(click_page(real_dir))
+
+
+if __name__ == "__main__":
+    main()

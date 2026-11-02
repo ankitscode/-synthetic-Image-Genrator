@@ -199,7 +199,8 @@ def pct(v: float | None, digits: int = 2) -> str:
 
 
 def histogram_svg(gen: np.ndarray, imp: np.ndarray, threshold: float) -> str:
-    lo, hi = float(min(gen.min(), imp.min())), 1.0
+    hi = 1.0
+    lo = min(float(min(gen.min(), imp.min())), hi - 0.2)     # at least a 0.2 wide axis (e.g. all scores 1.0)
     edges = np.linspace(lo, hi, HIST_BINS + 1)
     w, h, pad = 900, 220, 30
     x = lambda v: pad + (v - lo) / (hi - lo) * (w - 2 * pad)  # noqa: E731

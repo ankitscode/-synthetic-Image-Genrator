@@ -54,7 +54,10 @@ beards and headwear matters.
   **Real test photos** (consented, evaluation only, never training; on Drive only, never in git): `<real_dir>/<person>/*.jpg`;
   the 5 points are **clicked by hand** in Colab (`training/real_photos.py` clicker, notebook 7a → `landmarks.json`; no
   detector), aligned with `app/postprocess.align` after an anti-aliased shrink; the report adds a "Real people" section
-  (`--real-dir`) at the synthetic threshold, incl. how often a real face's best match is a synthetic person. Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
+  (`--real-dir`) at the synthetic threshold, incl. how often a real face's best match is a synthetic person.
+  Local evaluation (laptop, CPU, `venv_ai/`): notebook 8 / `training/bundle.py` packs model + held-out images + shapes
+  (~10 MB zip); `python -m training.real_photos data/real_test` serves the click page at 127.0.0.1:8770 (`data/real_test`
+  = symlinks to the 10 consented people employe_002..011 in `data/raw_photos`; employe_001 is not part of the test). Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
   Code is cloned from the public GitHub mirror `https://github.com/ankitscode/-synthetic-Image-Genrator`
   (remote `github`; GitLab `origin` stays). Push both remotes. Open directly:
   `https://colab.research.google.com/github/ankitscode/-synthetic-Image-Genrator/blob/master/colab/synthface_3d_colab.ipynb`

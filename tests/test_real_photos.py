@@ -94,3 +94,75 @@ def test_report_real_section() -> None:
     assert r["one_to_n_real_plus_synthetic"]["gallery"] == 15 and r["one_to_n_real_plus_synthetic"]["searches"] == 9
     assert summary["one_to_one"]["same_matched"] + summary["one_to_one"]["same_rejected"] == 12 * 15   # synthetic unchanged
     assert "Real people" in page and "do not share this report outside the team" in page
+
+
+def test_bundle_has_what_the_report_needs(tmp_path: Path) -> None:
+    import zipfile
+
+    from tests.test_training import identity, make_chunk
+    from training import bundle, data, hard_eval
+
+    root = tmp_path / "synthface_output"
+    make_chunk(root, "p1_chunk01", 7, {1: identity(), 2: identity(), 3: identity()}, images=2)
+    (root / "selections").mkdir()
+    np.savez_compressed(root / "selections" / "p1_chunk01.shapes.npz", shapes=np.arange(3 * 4 * 3, dtype=np.float32).reshape(3, 4, 3),
+                        indices=np.array([1, 2, 3]))
+    people, report = data.collect(root, holdout_fraction=0.0, manual={})
+    people[1].split = people[2].split = "holdout"
+    run = root / "models" / "r"
+    run.mkdir(parents=True)
+    data.save_index(run / "index.json", people, report)
+    (run / "best.pt").write_bytes(b"weights")
+    real = make_real_dir(tmp_path / "real", {"emp_a": 1})
+    real_photos.save_landmark(real, "emp_a/IMG_000.jpg", POINTS.tolist())
+
+    counts = bundle.export(root, run, tmp_path / "b.zip", real)
+    assert counts["people"] == 2 and counts["images"] == 4 and counts["shapes"] == 2 and counts["real_landmarks"]
+    out = tmp_path / "unzipped"
+    zipfile.ZipFile(tmp_path / "b.zip").extractall(out)
+    assert not (out / "p1_chunk01" / "id_00001").exists()                     # training people are not packed
+    holdout, images, labels = hard_eval.load_holdout(out, out / "models" / "r", out / "no_cache")
+    assert [h.identity_id for h in holdout] == ["id_00002", "id_00003"] and images.shape[0] == 4
+    shapes = hard_eval.face_shapes(out, holdout)
+    assert shapes.shape == (2, 2) and shapes[0, 1] > 0
+    assert (out / "real_landmarks.json").exists() and (out / "models" / "r" / "best.pt").read_bytes() == b"weights"
+
+
+def test_local_click_server_serves_and_saves(tmp_path: Path) -> None:
+    import threading
+    import urllib.request
+    from http.server import ThreadingHTTPServer
+
+    real_dir = make_real_dir(tmp_path / "real", {"emp_a": 1})
+    captured = {}
+    original = ThreadingHTTPServer.serve_forever
+
+    def capture(self) -> None:          # run the real handler on a free port in a thread
+        captured["server"] = self
+        original(self)
+
+    ThreadingHTTPServer.serve_forever = capture
+    try:
+        t = threading.Thread(target=real_photos.serve_local, args=(real_dir, 0), daemon=True)
+        t.start()
+        while "server" not in captured:
+            pass
+        port = captured["server"].server_address[1]
+        page = urllib.request.urlopen(f"http://127.0.0.1:{port}/").read().decode()
+        assert "invokeFunction" in page and "emp_a/IMG_000.jpg" in page
+
+        def call(name: str, args: list) -> dict:
+            req = urllib.request.Request(f"http://127.0.0.1:{port}/call", json.dumps({"name": name, "args": args}).encode())
+            return json.loads(urllib.request.urlopen(req).read())
+
+        assert call("synthface.photo", ["emp_a/IMG_000.jpg"])["data"].startswith("data:image/jpeg")
+        assert call("synthface.save", ["emp_a/IMG_000.jpg", POINTS.tolist()]) == {"ok": True}
+        assert real_photos.load_landmarks(real_dir)["points"]["emp_a/IMG_000.jpg"] == POINTS.tolist()
+        try:
+            call("synthface.save", ["../../etc/passwd", POINTS.tolist()])
+            raise AssertionError("unknown photo accepted")
+        except urllib.error.HTTPError as exc:
+            assert exc.code == 400
+        captured["server"].shutdown()
+    finally:
+        ThreadingHTTPServer.serve_forever = original
