@@ -101,3 +101,57 @@ def test_model_shapes_and_arcface() -> None:
     logits = head(emb, torch.tensor([0, 3]), 0.5)
     plain = head(emb, torch.tensor([0, 3]), 0.0)
     assert logits.shape == (2, 5) and (logits[0, 0] < plain[0, 0]) and torch.allclose(logits[0, 1:], plain[0, 1:])
+
+
+def test_hard_eval_groups_and_rates() -> None:
+    from training import hard_eval
+
+    rng = np.random.default_rng(0)
+    people = [identity("male", 0.5, "short01"), identity("male", 0.52, "short01"), identity("female", 0.2, "long01"),
+              identity("female", 0.9, "afro01"), identity("male", 0.9, "none"), identity("female", 0.5, "long01")]
+    centres = rng.normal(size=(len(people), 64))
+    centres[1] = centres[0] + 0.05 * rng.normal(size=64)          # same look and almost the same face
+    labels = np.repeat(np.arange(len(people)), 40)
+    emb = centres[labels] + 0.3 * rng.normal(size=(len(labels), 64))
+    params = [{"camera": {"yaw": float(30 * (k % 2))}, "background": {"kind": "hdri" if k % 3 else "solid"}}
+              for k in range(len(labels))]
+    shape = np.full((6, 6), 0.2)
+    shape[0, 1] = shape[1, 0] = 0.03
+    np.fill_diagonal(shape, 0)
+    report = hard_eval.evaluate(emb, labels, people, params, shape)
+
+    groups = report["impostor_groups"]
+    assert groups["all different people"]["person_pairs"] == 15
+    assert groups["same sex"]["person_pairs"] == 3 + 3
+    assert groups["same look (sex, tone, hair, beard)"]["person_pairs"] == 1
+    assert groups["look-alikes (shape + 3 traits)"]["person_pairs"] == 1
+    # with one threshold set on all pairs, the look-alike pair gets through far more often than random pairs
+    assert groups["same look (sex, tone, hair, beard)"]["far_at_global@0.001"] >= 10 * 0.001
+    assert report["most_confused"][0]["a"] == 0 and report["most_confused"][0]["b"] == 1
+    assert report["genuine_groups"]["yaw difference >= 25 deg"]["pairs"] > 0
+
+    r = hard_eval.rates(np.array([0.9, 0.8]), np.linspace(-1, 0, 100))
+    assert r["tar@far=0.001"] is None and r["eer"] == 0.0     # too few pairs for 1e-3: not reported
+
+
+def test_hard_eval_loads_holdout_from_cache(tmp_path: Path) -> None:
+    from training import hard_eval
+
+    make_chunk(tmp_path, "p1_chunk01", 7, {1: identity(), 2: identity(), 3: identity()}, images=2)
+    people, report = data.collect(tmp_path, holdout_fraction=0.0, manual={})
+    people[1].split = "holdout"
+    run = tmp_path / "run"
+    run.mkdir()
+    data.save_index(run / "index.json", people, report)
+    holdout, images, labels = hard_eval.load_holdout(tmp_path, run, tmp_path / "cache")     # no cache: from files
+    assert [h.identity_id for h in holdout] == ["id_00002"] and images.shape[0] == 2 and labels.tolist() == [0, 0]
+    arrays = data.load_arrays(tmp_path, people, log_every=0)
+    stem = tmp_path / "cache" / f"images_{data.fingerprint(people)}"
+    stem.parent.mkdir()
+    for k in ("images", "split"):
+        np.save(stem.with_name(f"{stem.name}_{k}.npy"), arrays[k])
+    _, cached, _ = hard_eval.load_holdout(tmp_path, run, tmp_path / "cache")
+    assert np.array_equal(cached, images)
+    hard_eval.confused_sheet(images, labels, ["a"], [{"a": 0, "b": 0, "mean_score": 0.5, "max_score": 0.6,
+                                                    "shape_iod": None}], run / "sheet.png")
+    assert Image.open(run / "sheet.png").size == (2 * 3 * 112 + 16, 126)

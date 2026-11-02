@@ -46,7 +46,9 @@ beards and headwear matters.
   the current rule, `training/exclude.json`) and holds out ~10% of people (stable hash) for 1:1 verification
   (`training/metrics.py`: AUC, EER, TAR@FAR). Augmentation only at training time (`training/augment.py`). Output:
   `synthface_output/models/<run>/` (last.pt resumable, best.pt, metrics.json, index.json, .onnx/.ts); image cache
-  `synthface_output/training_cache/`. Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
+  `synthface_output/training_cache/`. Harder test of a finished run: `training/hard_eval.py` (notebook section 6): every held-out image pair,
+  grouped by same sex / tone / hairstyle / look / face shape / look-alike, FAR of each group at one fixed threshold;
+  writes `hard_eval.json` + `hard_pairs.png` (most-confused people). The random-pair score alone is too easy. Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
   Code is cloned from the public GitHub mirror `https://github.com/ankitscode/-synthetic-Image-Genrator`
   (remote `github`; GitLab `origin` stays). Push both remotes. Open directly:
   `https://colab.research.google.com/github/ankitscode/-synthetic-Image-Genrator/blob/master/colab/synthface_3d_colab.ipynb`
