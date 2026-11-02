@@ -188,12 +188,23 @@ def load_holdout(root: Path, run: Path, cache_dir: Path) -> tuple[list[data.Pers
     return holdout, images, labels
 
 
-def embed_best(run: Path, images: np.ndarray, device: str) -> tuple[np.ndarray, int]:
+def load_params(root: Path, holdout: list[data.Person]) -> tuple[list[dict], list[dict]]:
+    """params.json of each held-out person, and the per-image params in the image order of load_holdout."""
+    records = [json.loads((root / h.chunk / h.identity_id / "params.json").read_text()) for h in holdout]
+    image_params = []
+    for h, record in zip(holdout, records):
+        by_stem = {Path(im["file"]).stem: im for im in record["images"]}
+        image_params += [by_stem[Path(rel).stem] for rel in h.images]
+    return records, image_params
+
+
+def embed_best(run: Path, images: np.ndarray, device: str | None = None) -> tuple[np.ndarray, int]:
     import torch
 
     from training.model import MobileFaceNet
     from training.train import embed
 
+    device = device or ("cuda" if torch.cuda.is_available() else "cpu")
     ckpt = torch.load(run / "best.pt", map_location="cpu", weights_only=False)
     model = MobileFaceNet()
     model.load_state_dict(ckpt["model"])
@@ -233,15 +244,8 @@ def main() -> None:
     args = p.parse_args()
 
     holdout, images, labels = load_holdout(args.root, args.run, args.cache_dir or args.root / "training_cache")
-    records = [json.loads((args.root / h.chunk / h.identity_id / "params.json").read_text()) for h in holdout]
-    image_params = []
-    for h, record in zip(holdout, records):
-        by_stem = {Path(im["file"]).stem: im for im in record["images"]}
-        image_params += [by_stem[Path(rel).stem] for rel in h.images]
+    records, image_params = load_params(args.root, holdout)
     names = [f"{h.chunk}/{h.identity_id}" for h in holdout]
-    if args.device is None:
-        import torch
-        args.device = "cuda" if torch.cuda.is_available() else "cpu"
     embeddings, epoch = embed_best(args.run, images, args.device)
     report = evaluate(embeddings, labels, [r["identity"] for r in records], image_params,
                       face_shapes(args.root, holdout))

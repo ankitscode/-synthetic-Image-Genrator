@@ -155,3 +155,29 @@ def test_hard_eval_loads_holdout_from_cache(tmp_path: Path) -> None:
     hard_eval.confused_sheet(images, labels, ["a"], [{"a": 0, "b": 0, "mean_score": 0.5, "max_score": 0.6,
                                                     "shape_iod": None}], run / "sheet.png")
     assert Image.open(run / "sheet.png").size == (2 * 3 * 112 + 16, 126)
+
+
+def test_report_one_to_one_and_one_to_n() -> None:
+    from training import report
+
+    rng = np.random.default_rng(0)
+    people = [identity("male" if p % 2 else "female", p / 12, "short01") for p in range(12)]
+    labels = np.repeat(np.arange(12), 6)
+    emb = rng.normal(size=(12, 64))[labels] + 0.2 * rng.normal(size=(72, 64))
+    params = [{"camera": {"yaw": float(k % 6) * 5, "pitch": 0.0}, "background": {"kind": "solid"}} for k in range(72)]
+    images = np.zeros((72, 112, 112, 3), np.uint8)
+    names, files = [f"c/id_{p:05d}" for p in range(12)], [f"img_{k % 6 + 1:03d}" for k in range(72)]
+    page, summary = report.build(emb, labels, images, names, files, people, params, None,
+                                 {"run": "t", "epoch": 1, "people": 12, "images": 72}, unknown_fraction=0.25)
+    c, cl, op = summary["one_to_one"], summary["one_to_n_closed"], summary["one_to_n_open"]
+    assert c["same_matched"] + c["same_rejected"] == 12 * 15 and c["same_matched"] == 180   # well separated people
+    assert c["different_matched"] + c["different_rejected"] == 72 * 71 // 2 - 180
+    assert cl["searches"] == 72 - 12 and cl["rank1"] == 1.0          # one enrolled (most frontal) image per person
+    assert op["gallery"] == 9 and op["unknown_people"] == 3 and op["unknown_searches"] == 15
+    assert page.startswith("<!doctype html>") and "1:N identification" in page and page.count("data:image/jpeg") > 50
+    assert summary["threshold"] == report.build(emb, labels, images, names, files, people, params, None,
+                                                {"run": "t", "epoch": 1, "people": 12, "images": 72})[1]["threshold"]
+
+    t = report.build(emb, labels, images, names, files, people, params, None,
+                     {"run": "t", "epoch": 1, "people": 12, "images": 72}, threshold=0.99)[1]
+    assert t["threshold_how"] == "fixed" and t["one_to_one"]["same_matched"] == 0
