@@ -50,7 +50,11 @@ beards and headwear matters.
   grouped by same sex / tone / hairstyle / look / face shape / look-alike, FAR of each group at one fixed threshold;
   writes `hard_eval.json` + `hard_pairs.png` (most-confused people). The random-pair score alone is too easy.
   Evaluation report: `training/report.py` (notebook section 7) → `report.html` (self-contained: 1:1 pairs and 1:N
-  gallery searches, closed + open set, MATCH / NO MATCH at one threshold, default FAR 1e-3) + `report_summary.json`. Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
+  gallery searches, closed + open set, MATCH / NO MATCH at one threshold, default FAR 1e-3) + `report_summary.json`.
+  **Real test photos** (consented, evaluation only, never training; on Drive only, never in git): `<real_dir>/<person>/*.jpg`;
+  the 5 points are **clicked by hand** in Colab (`training/real_photos.py` clicker, notebook 7a → `landmarks.json`; no
+  detector), aligned with `app/postprocess.align` after an anti-aliased shrink; the report adds a "Real people" section
+  (`--real-dir`) at the synthetic threshold, incl. how often a real face's best match is a synthetic person. Torch is not in `venv/`: model code is smoke-tested with `venv_ai/` on CPU.
   Code is cloned from the public GitHub mirror `https://github.com/ankitscode/-synthetic-Image-Genrator`
   (remote `github`; GitLab `origin` stays). Push both remotes. Open directly:
   `https://colab.research.google.com/github/ankitscode/-synthetic-Image-Genrator/blob/master/colab/synthface_3d_colab.ipynb`

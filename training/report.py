@@ -83,11 +83,13 @@ def one_to_one(sim: np.ndarray, labels: np.ndarray, threshold: float, rng: np.ra
     return {"counts": counts, "genuine": gen, "impostor": imp, "examples": examples}
 
 
-def one_to_n(sim: np.ndarray, labels: np.ndarray, image_params: list[dict], threshold: float,
-             unknown_fraction: float, rng: np.random.Generator) -> dict:
+def one_to_n(sim: np.ndarray, labels: np.ndarray, enrol: np.ndarray, threshold: float,
+             unknown_fraction: float, rng: np.random.Generator, probe_mask: np.ndarray | None = None) -> dict:
+    """enrol: gallery image per person (persons = np.unique(labels), in order); probe_mask: images allowed to search."""
     persons = np.unique(labels)
-    enrol = np.array([frontal_image(labels, image_params, p) for p in persons])
     probes = np.setdiff1d(np.arange(len(labels)), enrol)
+    if probe_mask is not None:
+        probes = probes[probe_mask[probes]]
 
     def search(gallery_persons: np.ndarray, probe_idx: np.ndarray) -> dict:
         gallery = enrol[np.searchsorted(persons, gallery_persons)]
@@ -142,7 +144,8 @@ def one_to_n(sim: np.ndarray, labels: np.ndarray, image_params: list[dict], thre
         "not-enrolled people, highest best match": rows(opened, np.flatnonzero(is_unknown)[np.argsort(-unknown_top)],
                                                         ~is_unknown),
     }
-    return {"closed": closed_counts, "open": open_counts, "examples": examples}
+    return {"closed": closed_counts, "open": open_counts, "examples": examples,
+            "probes": probes, "top1": closed["top_persons"][:, 0]}
 
 
 # ---------------------------------------------------------------- html
@@ -252,7 +255,7 @@ def search_row(thumb: Thumbs, names: list[str], files: list[str], row: dict, thr
 
 
 def render(meta: dict, oo: dict, on: dict, hard: dict, thumb: Thumbs, names: list[str], files: list[str],
-           labels: np.ndarray) -> str:
+           labels: np.ndarray, real_html: str = "") -> str:
     t, c = meta["threshold"], oo["counts"]
     n_same, n_diff = c["same_matched"] + c["same_rejected"], c["different_matched"] + c["different_rejected"]
     cl, op = on["closed"], on["open"]
@@ -316,13 +319,113 @@ def render(meta: dict, oo: dict, on: dict, hard: dict, thumb: Thumbs, names: lis
               f'<th>matched at FAR 1e-3</th><th>EER</th></tr>{rows}</table></div>')
     return (f'<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" '
             f'content="width=device-width,initial-scale=1"><title>Face model evaluation</title><style>{CSS}</style>'
-            f'</head><body><main>{head}{one}{many}{groups}</main></body></html>')
+            f'</head><body><main>{head}{one}{many}{groups}{real_html}</main></body></html>')
+
+
+def eer_threshold(genuine: np.ndarray, impostor: np.ndarray) -> tuple[float, float]:
+    """(EER, threshold where wrong rejections = wrong matches)."""
+    ts = np.unique(np.concatenate([genuine, impostor]))
+    frr = np.searchsorted(np.sort(genuine), ts, "right") / len(genuine)
+    far = 1 - np.searchsorted(np.sort(impostor), ts, "right") / len(impostor)
+    k = int(np.argmin(np.abs(frr - far)))
+    return float((frr[k] + far[k]) / 2), float(ts[k])
+
+
+def shift_rows(rows: list[dict], images: int, persons: int) -> list[dict]:
+    return [{"probe": r["probe"] + images, "truth": r["truth"] + persons, "enrolled": r["enrolled"],
+             "top": [(p + persons, i + images, s) for p, i, s in r["top"]]} for r in rows]
+
+
+def real_people(sim: np.ndarray, labels: np.ndarray, n_synth: int, p_synth: int, synth_enrol: np.ndarray,
+                threshold: float, rng: np.random.Generator) -> dict:
+    """Real photos (images n_synth.., persons p_synth..) at the synthetic threshold, alone and next to the synthetic gallery."""
+    sim_r, lab_r = sim[n_synth:, n_synth:], labels[n_synth:] - p_synth
+    oo = one_to_one(sim_r, lab_r, threshold, rng)
+    oo["examples"] = {k: [(a + n_synth, b + n_synth, s) for a, b, s in v] for k, v in oo["examples"].items()
+                      if k != "random different people"}
+    eer, t_eer = eer_threshold(oo["genuine"], oo["impostor"])
+    enrol_r = np.array([np.flatnonzero(lab_r == p)[0] for p in np.unique(lab_r)])      # first photo of each person
+    alone = one_to_n(sim_r, lab_r, enrol_r, threshold, 0.0, rng)
+    mixed = one_to_n(sim, labels, np.concatenate([synth_enrol, enrol_r + n_synth]), threshold, 0.0, rng,
+                     probe_mask=np.arange(len(labels)) >= n_synth)
+    people = []
+    for p in np.unique(lab_r):
+        own = np.flatnonzero(lab_r == p)
+        block = sim_r[np.ix_(own, own)][np.triu_indices(len(own), 1)]
+        others = sim_r[np.ix_(own, np.flatnonzero(lab_r != p))]
+        people.append({"person": int(p) + p_synth, "photos": int(len(own)), "same_mean": float(block.mean()),
+                       "same_min": float(block.min()), "same_rejected": int((block <= threshold).sum()),
+                       "same_pairs": int(len(block)), "best_real_stranger": float(others.max()) if others.size else None,
+                       "best_synthetic": float(sim[np.ix_(own + n_synth, np.arange(n_synth))].max())})
+    return {"one_to_one": oo, "eer": eer, "eer_threshold": t_eer, "alone": alone["closed"],
+            "alone_examples": shift_rows(alone["examples"]["random searches (everyone enrolled)"], n_synth, p_synth),
+            "mixed": mixed["closed"] | {"best_is_synthetic": float((mixed["top1"] < p_synth).mean())},
+            "mixed_examples": mixed["examples"]["searches where the best match is the wrong person"],
+            "people": people}
+
+
+def render_real(r: dict, info: dict, thumb: Thumbs, names: list[str], files: list[str], labels: np.ndarray,
+                n_synth: int, threshold: float) -> str:
+    c, al, mx = r["one_to_one"]["counts"], r["alone"], r["mixed"]
+    n_same, n_diff = c["same_matched"] + c["same_rejected"], c["different_matched"] + c["different_rejected"]
+    left_out = len(info["skipped"]) + len(info["missing"])
+    out = (f'<h2>Real people</h2><div class="note">{len(r["people"])} real people, {len(labels) - n_synth} photos '
+           f'(5 points clicked by hand, aligned like the renders; mean alignment residual '
+           f'{np.mean(info["residual_px"]):.1f} px, max {np.max(info["residual_px"]):.1f} px). '
+           f'{left_out} photos skipped or not clicked{", people with fewer than 2 photos left out: " + html.escape(", ".join(info["too_few"])) if info["too_few"] else ""}. '
+           f'<b>Same threshold as above ({threshold:.3f}).</b> With this few people the numbers are rough: '
+           f'{n_diff:,} different-person pairs cannot measure a 1-in-1,000 error rate. '
+           f'<b>Contains photos of real people: do not share this report outside the team.</b></div>'
+           f'<div class="tiles"><div class="tile"><b>{pct(c["same_matched"] / n_same)}</b><span>same person matched '
+           f'({c["same_matched"]}/{n_same} pairs)</span></div>'
+           f'<div class="tile"><b>{pct(c["different_matched"] / n_diff)}</b><span>different people matched '
+           f'({c["different_matched"]}/{n_diff} pairs)</span></div>'
+           f'<div class="tile"><b>{pct(r["eer"])}</b><span>EER (at threshold {r["eer_threshold"]:.3f})</span></div>'
+           f'<div class="tile"><b>{pct(al["rank1"])}</b><span>1:N rank-1 among the {al["gallery"]} real people</span></div>'
+           f'<div class="tile"><b>{pct(mx["best_is_synthetic"])}</b><span>real searches whose best match is a '
+           f'synthetic person (gallery of {mx["gallery"]})</span></div></div>')
+    out += f'<h3>Scores</h3>{histogram_svg(r["one_to_one"]["genuine"], r["one_to_one"]["impostor"], threshold)}'
+    rows = "".join(
+        f'<tr><td>{html.escape(names[p["person"]])}</td><td>{p["photos"]}</td><td>{p["same_mean"]:.3f}</td>'
+        f'<td>{p["same_min"]:.3f}</td><td>{p["same_rejected"]}/{p["same_pairs"]}</td>'
+        f'<td>{"n/a" if p["best_real_stranger"] is None else format(p["best_real_stranger"], ".3f")}</td>'
+        f'<td>{p["best_synthetic"]:.3f}</td></tr>' for p in r["people"])
+    out += (f'<h3>Per person</h3><div class="wrap"><table><tr><th>person</th><th>photos</th><th>same-person mean</th>'
+            f'<th>lowest</th><th>rejected pairs</th><th>highest other real person</th><th>highest synthetic person</th>'
+            f'</tr>{rows}</table></div><p class="muted">A same-person score below the threshold is a wrong rejection; '
+            f'an other-person score above it is a wrong match. If the real faces score high against synthetic people, '
+            f'the model sees "real photo" more than the face.</p>')
+    out += '<h3>All real photos, as aligned</h3><p class="muted">Check the clicks: eyes, nose and mouth should sit at '            'the same place in every crop.</p><div class="cards">' + "".join(
+               f'<div class="card"><div class="pair">' + "".join(
+                   f'<figure><img src="{thumb(int(k))}" alt=""><figcaption>{html.escape(files[int(k)])}</figcaption></figure>'
+                   for k in np.flatnonzero(labels == p["person"])) + f'</div><div class="verdict">'
+               f'<span>{html.escape(names[p["person"]])}</span></div></div>' for p in r["people"]) + "</div>"
+    for title, pairs in r["one_to_one"]["examples"].items():
+        out += f'<h3>Real: {html.escape(title)}</h3><div class="cards">' + "".join(
+            pair_card(thumb, names, files, labels, a, b, s, threshold) for a, b, s in pairs) + "</div>"
+    out += (f'<h3>Real 1:N</h3><div class="wrap"><table><tr><th>gallery</th><th>searches</th><th>rank-1</th>'
+            f'<th>correct match</th><th>wrong match</th><th>no match</th></tr>'
+            f'<tr><td>{al["gallery"]} real people</td><td>{al["searches"]}</td><td>{pct(al["rank1"])}</td>'
+            f'<td>{al["correct_match"]}</td><td>{al["wrong_match"]}</td><td>{al["no_match"]}</td></tr>'
+            f'<tr><td>{mx["gallery"]} people (real + synthetic)</td><td>{mx["searches"]}</td><td>{pct(mx["rank1"])}</td>'
+            f'<td>{mx["correct_match"]}</td><td>{mx["wrong_match"]}</td><td>{mx["no_match"]}</td></tr></table></div>'
+            f'<p class="muted">Each real person is enrolled with their first photo; their other photos search.</p>')
+    for title, rows_ in (("Real searches (real gallery)", r["alone_examples"]),
+                         ("Real searches where the best match is the wrong person (real + synthetic gallery)",
+                          r["mixed_examples"])):
+        if rows_:
+            out += f'<h3>{html.escape(title)}</h3>' + "".join(search_row(thumb, names, files, x, threshold) for x in rows_)
+    return out
 
 
 def build(embeddings: np.ndarray, labels: np.ndarray, images: np.ndarray, names: list[str], files: list[str],
           identities: list[dict], image_params: list[dict], shape_rms: np.ndarray | None, meta: dict,
-          far: float = 1e-3, threshold: float | None = None, unknown_fraction: float = 0.3) -> tuple[str, dict]:
-    """(html, summary dict) from the embeddings of the held-out images."""
+          far: float = 1e-3, threshold: float | None = None, unknown_fraction: float = 0.3,
+          real: dict | None = None) -> tuple[str, dict]:
+    """(html, summary dict) from the embeddings of the held-out images.
+
+    real (optional): {"embeddings", "images", "labels", "names", "files", "residual_px", "skipped", "missing",
+    "too_few"} of real photos (training/real_photos.load_aligned + embeddings): evaluated at the same threshold."""
     emb = embeddings / np.linalg.norm(embeddings, axis=1, keepdims=True).clip(1e-12)
     sim = emb @ emb.T
     rng = np.random.default_rng(REPORT_SEED)
@@ -332,14 +435,32 @@ def build(embeddings: np.ndarray, labels: np.ndarray, images: np.ndarray, names:
         how = f"FAR {far:g} on these pairs"
     else:
         how = "fixed"
+    persons = np.unique(labels)
+    enrol = np.array([frontal_image(labels, image_params, p) for p in persons])
     oo = one_to_one(sim, labels, threshold, rng)
-    on = one_to_n(sim, labels, image_params, threshold, unknown_fraction, rng)
+    on = one_to_n(sim, labels, enrol, threshold, unknown_fraction, rng)
     hard = hard_eval.evaluate(embeddings, labels, identities, image_params, shape_rms)
     meta = meta | {"threshold": threshold, "threshold_how": how,
                    "created": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")}
-    page = render(meta, oo, on, hard, Thumbs(images), names, files, labels)
     summary = {"threshold": threshold, "threshold_how": how, "one_to_one": oo["counts"],
                "one_to_n_closed": on["closed"], "one_to_n_open": on["open"]}
+    real_html, thumb = "", None
+    if real is not None and len(real["labels"]):
+        n, p = len(labels), len(persons)
+        all_emb = np.concatenate([embeddings, real["embeddings"]])
+        all_emb = all_emb / np.linalg.norm(all_emb, axis=1, keepdims=True).clip(1e-12)
+        all_labels = np.concatenate([labels, real["labels"] + p])
+        images = np.concatenate([np.asarray(images), real["images"]])
+        names, files = names + real["names"], files + real["files"]
+        r = real_people(all_emb @ all_emb.T, all_labels, n, p, enrol, threshold, rng)
+        thumb = Thumbs(images)
+        real_html = render_real(r, real, thumb, names, files, all_labels, n, threshold)
+        summary["real"] = {"people": len(real["names"]), "photos": int(len(real["labels"])),
+                           "one_to_one": r["one_to_one"]["counts"], "eer": r["eer"], "eer_threshold": r["eer_threshold"],
+                           "one_to_n_real_gallery": r["alone"], "one_to_n_real_plus_synthetic": r["mixed"],
+                           "per_person": [x | {"person": names[x["person"]]} for x in r["people"]]}
+        labels = all_labels
+    page = render(meta, oo, on, hard, thumb or Thumbs(images), names, files, labels, real_html)
     return page, summary
 
 
@@ -351,6 +472,8 @@ def main() -> None:
     p.add_argument("--far", type=float, default=1e-3, help="threshold = score letting this share of strangers match")
     p.add_argument("--threshold", type=float, help="fixed threshold instead of --far")
     p.add_argument("--unknown-fraction", type=float, default=0.3, help="1:N open set: share of people not enrolled")
+    p.add_argument("--real-dir", type=Path, help="real test photos: <dir>/<person>/*.jpg + landmarks.json "
+                                                  "(training/real_photos.py)")
     p.add_argument("--device", default=None)
     args = p.parse_args()
 
@@ -360,9 +483,18 @@ def main() -> None:
     names = [f"{h.chunk}/{h.identity_id}" for h in holdout]
     files = [Path(rel).stem for h in holdout for rel in h.images]
     meta = {"run": args.run.name, "epoch": epoch, "people": len(holdout), "images": int(len(labels))}
+    real = None
+    if args.real_dir:
+        from training import real_photos
+
+        real = real_photos.load_aligned(args.real_dir)
+        print(f"REAL {len(real['names'])} people, {len(real['labels'])} photos (skipped {len(real['skipped'])}, "
+              f"not clicked {len(real['missing'])}, too few photos {real['too_few']})", flush=True)
+        if len(real["labels"]):
+            real["embeddings"] = hard_eval.embed_best(args.run, real["images"], args.device)[0]
     page, summary = build(embeddings, labels, images, names, files, [r["identity"] for r in records], image_params,
                           hard_eval.face_shapes(args.root, holdout), meta, args.far, args.threshold,
-                          args.unknown_fraction)
+                          args.unknown_fraction, real)
     (args.run / "report.html").write_text(page, encoding="utf-8")
     (args.run / "report_summary.json").write_text(json.dumps(meta | summary, indent=1) + "\n")
     c, cl, op = summary["one_to_one"], summary["one_to_n_closed"], summary["one_to_n_open"]
@@ -372,6 +504,14 @@ def main() -> None:
     print(f"1:N  rank-1 {cl['rank1']:.4f}  rank-5 {cl['rank5']:.4f}  at threshold: correct {cl['correct_match']}  "
           f"wrong {cl['wrong_match']}  no match {cl['no_match']} of {cl['searches']}")
     print(f"1:N open set  not-enrolled matched {op['unknown_matched']}/{op['unknown_searches']} (FPIR {op['fpir']})")
+    if "real" in summary:
+        rr = summary["real"]
+        rc, ra, rm = rr["one_to_one"], rr["one_to_n_real_gallery"], rr["one_to_n_real_plus_synthetic"]
+        print(f"REAL 1:1  same person matched {rc['same_matched']}/{rc['same_matched'] + rc['same_rejected']}  "
+              f"different people matched {rc['different_matched']}/{rc['different_matched'] + rc['different_rejected']}  "
+              f"EER {rr['eer']:.4f} (threshold {rr['eer_threshold']:.3f})")
+        print(f"REAL 1:N  rank-1 {ra['rank1']:.4f} among {ra['gallery']} real people; with the synthetic gallery "
+              f"rank-1 {rm['rank1']:.4f}, best match synthetic {rm['best_is_synthetic']:.4f}")
     print(f"wrote {args.run / 'report.html'} ({len(page) / 1e6:.1f} MB)")
 
 
